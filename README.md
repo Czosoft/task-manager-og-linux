@@ -8,7 +8,7 @@
   <img alt="AnduinOS supported" src="https://img.shields.io/badge/AnduinOS-supported-48B04B?style=flat-square">
   <img alt="GTK 3" src="https://img.shields.io/badge/GTK-3-4A90D9?style=flat-square&amp;logo=gtk&amp;logoColor=white">
   <img alt="Python 3.10 or newer" src="https://img.shields.io/badge/Python-3.10%2B-3776AB?style=flat-square&amp;logo=python&amp;logoColor=white">
-  <img alt="Release beta06.3" src="https://img.shields.io/badge/release-beta06.3-0A84FF?style=flat-square">
+  <img alt="Release beta06.4" src="https://img.shields.io/badge/release-beta06.4-0A84FF?style=flat-square">
   <img alt="Dark and light themes" src="https://img.shields.io/badge/themes-dark%20%7C%20light-55585E?style=flat-square">
   <img alt="MIT License" src="https://img.shields.io/badge/license-MIT-F2C94C?style=flat-square">
 </p>
@@ -44,6 +44,8 @@
 
 CPU 总览与逻辑处理器区域可以分别收起。收起 Overall 后，逻辑处理器网格会立即重新计算布局并切换到更高的图表；外层页面负责统一滚动，不会再产生遮挡观察内容的内层滚动条。
 
+Performance 左侧资源小窗与右侧主图使用相同的 60 样本历史和纵轴：CPU、Memory、GPU、Disk 固定为 `0-100%`，Thermals 固定为 `0-110 C`；Network 与 Energy 使用相同的自适应峰值余量。因此小窗不再把 35% 内存或 60 C 温度错误放大到接近满幅。
+
 ## 深浅主题
 
 `Settings > Appearance` 提供三种应用主题：
@@ -77,7 +79,8 @@ CPU 总览与逻辑处理器区域可以分别收起。收起 Overall 后，逻�
     <td width="50%"><strong>Energy</strong><br><img src="screenshots/performance-energy-latest.png" alt="Observable Linux component power"></td>
   </tr>
   <tr>
-    <td colspan="2"><strong>Thermals</strong><br><img src="screenshots/performance-thermals-latest.png" alt="Linux temperature sensors"></td>
+    <td width="50%"><strong>Memory</strong><br><img src="screenshots/performance-memory-latest.png" alt="Linux memory utilization and pressure history"></td>
+    <td width="50%"><strong>Thermals</strong><br><img src="screenshots/performance-thermals-latest.png" alt="Linux temperature sensors"></td>
   </tr>
 </table>
 </details>

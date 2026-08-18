@@ -67,6 +67,18 @@ def main() -> int:
         capture_widget = window if os.environ.get("TMOG_CAPTURE_TITLEBAR") == "1" else root
         allocation = capture_widget.get_allocation()
         print(f"capturing {window.stack.get_visible_child_name()} in {window._effective_theme} theme")
+        for name, row in window.resource_rows.items():
+            main_graph = window.perf_widgets[name]["graph"]
+            if row.sparkline.fixed_max != main_graph.fixed_max:
+                raise RuntimeError(
+                    f"{name} sidebar graph scale {row.sparkline.fixed_max} "
+                    f"does not match main graph scale {main_graph.fixed_max}"
+                )
+            if row.sparkline.values.maxlen != main_graph.primary.maxlen:
+                raise RuntimeError(
+                    f"{name} sidebar history {row.sparkline.values.maxlen} samples "
+                    f"does not match main history {main_graph.primary.maxlen} samples"
+                )
         if (
             window.stack.get_visible_child_name() == "performance"
             and window.performance_stack.get_visible_child_name() == "cpu"

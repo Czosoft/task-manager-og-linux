@@ -36,6 +36,16 @@ CORE_GRAPH_SIZES = {
 }
 CORE_GRID_SPACING = 6
 CORE_GRID_BOTTOM_GUARD = 12
+RESOURCE_GRAPH_MAXIMA = {
+    "cpu": 100.0,
+    "memory": 100.0,
+    "gpu": 100.0,
+    "npu": None,
+    "disk": 100.0,
+    "network": None,
+    "energy": None,
+    "thermals": 110.0,
+}
 
 
 DARK_CSS = b"""
@@ -273,6 +283,12 @@ def theme_alpha(widget: Gtk.Widget, dark: float, light: float) -> float:
     return light if getattr(window, "_effective_theme", "dark") == "light" else dark
 
 
+def graph_maximum(values, fixed_max: float | None) -> float:
+    if fixed_max is not None:
+        return fixed_max
+    return max(1.0, max(values, default=0.0) * 1.15)
+
+
 class HistoryGraph(Gtk.DrawingArea):
     def __init__(self, color: str, max_points: int = 60, fixed_max: float | None = 100.0) -> None:
         super().__init__()
@@ -326,7 +342,7 @@ class HistoryGraph(Gtk.DrawingArea):
             context.line_to(width, y)
         context.stroke()
         observed = list(self.primary) + list(self.secondary)
-        maximum = self.fixed_max or max(1.0, max(observed, default=1.0) * 1.15)
+        maximum = graph_maximum(observed, self.fixed_max)
         self._line(context, self.secondary, self.secondary_color, 1.2, maximum, width, height)
         self._line(context, self.primary, self.color, 1.8, maximum, width, height)
         return False
@@ -401,9 +417,10 @@ class SegmentBar(Gtk.DrawingArea):
 
 
 class Sparkline(Gtk.DrawingArea):
-    def __init__(self, color: str, points: int = 36) -> None:
+    def __init__(self, color: str, points: int = 36, fixed_max: float | None = None) -> None:
         super().__init__()
         self.color = COLORS[color]
+        self.fixed_max = fixed_max
         self.values: deque[float] = deque(maxlen=points)
         self.set_size_request(58, 34)
         self.connect("draw", self._draw)
@@ -420,7 +437,7 @@ class Sparkline(Gtk.DrawingArea):
         context.fill()
         if not self.values:
             return False
-        maximum = max(1.0, max(self.values) * 1.1)
+        maximum = graph_maximum(self.values, self.fixed_max)
         step = width / max(1, self.values.maxlen - 1)
         context.set_source_rgba(*rgba(self.color, 0.95))
         context.set_line_width(1.4)
@@ -433,7 +450,13 @@ class Sparkline(Gtk.DrawingArea):
 
 
 class ResourceRow(Gtk.RadioButton):
-    def __init__(self, group: Gtk.RadioButton | None, title: str, color: str) -> None:
+    def __init__(
+        self,
+        group: Gtk.RadioButton | None,
+        title: str,
+        color: str,
+        fixed_max: float | None,
+    ) -> None:
         Gtk.RadioButton.__init__(self)
         if group:
             self.join_group(group)
@@ -449,7 +472,7 @@ class ResourceRow(Gtk.RadioButton):
         self.detail_label.get_style_context().add_class("resource-detail")
         labels.pack_start(title_label, False, False, 0)
         labels.pack_start(self.detail_label, False, False, 0)
-        self.sparkline = Sparkline(color)
+        self.sparkline = Sparkline(color, points=60, fixed_max=fixed_max)
         content.pack_start(labels, True, True, 0)
         content.pack_end(self.sparkline, False, False, 0)
         self.add(content)
@@ -1016,7 +1039,7 @@ class TmogWindow(Gtk.Window):
             ("thermals", "Thermals", "orange"),
         ]
         for name, label, color in resources:
-            button = ResourceRow(group, label, color)
+            button = ResourceRow(group, label, color, RESOURCE_GRAPH_MAXIMA[name])
             button.set_size_request(-1, 54)
             if group is None:
                 group = button
