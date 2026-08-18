@@ -68,6 +68,14 @@ treeview header button { background: #20231f; color: #9da49a; border: 0; border-
 treeview.view row:nth-child(even) { background: #181a17; }
 scrollbar { background: #151714; }
 scrollbar slider { background: #444940; border-radius: 4px; min-width: 8px; min-height: 8px; }
+.stable-scroll scrollbar { background: transparent; min-width: 7px; }
+.stable-scroll scrollbar.vertical slider,
+.stable-scroll scrollbar.vertical:hover slider {
+    background: rgba(91, 98, 87, 0.72);
+    border-radius: 3px;
+    margin: 1px;
+    min-width: 5px;
+}
 .resource-button { background: transparent; color: #abb1a8; border: 0; border-radius: 4px; box-shadow: none; padding: 10px; }
 .resource-button:checked { background: #252b24; color: #ffffff; border-left: 2px solid #53e767; }
 .resource-title { font-size: 12px; font-weight: 600; }
@@ -316,7 +324,7 @@ class CoreGraph(Gtk.DrawingArea):
         self.color = COLORS["blue"] if core_type == "P" else COLORS["green"]
         self.value = 0.0
         self.values: deque[float] = deque(maxlen=45)
-        self.set_size_request(142, 78)
+        self.set_size_request(108, 70)
         self.connect("draw", self._draw)
 
     def add(self, value: float) -> None:
@@ -816,12 +824,16 @@ class TmogWindow(Gtk.Window):
             self.core_flow.set_row_spacing(6)
             self.core_flow.set_column_spacing(6)
             self.core_flow.set_min_children_per_line(2)
-            self.core_flow.set_max_children_per_line(6)
+            self.core_flow.set_max_children_per_line(8)
             self.core_flow.set_valign(Gtk.Align.START)
             self.core_flow.get_style_context().add_class("core-flow")
             core_scroll = scrollable(self.core_flow)
             core_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
-            core_scroll.set_size_request(-1, 290)
+            core_scroll.set_overlay_scrolling(False)
+            core_scroll.get_style_context().add_class("stable-scroll")
+            core_scroll.set_size_request(-1, 300)
+            core_scroll.connect("size-allocate", self._on_core_scroll_size_allocate)
+            self.core_scroll = core_scroll
             self.cpu_logical_section = collapsible_card(
                 "Logical processors / per-core history", core_scroll, "green"
             )
@@ -920,7 +932,11 @@ class TmogWindow(Gtk.Window):
             "device_combo": device_combo,
             "sensor_flow": sensor_flow,
         }
-        self.performance_stack.add_named(scrollable(content), name)
+        page_scroll = scrollable(content)
+        page_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        page_scroll.set_overlay_scrolling(False)
+        page_scroll.get_style_context().add_class("stable-scroll")
+        self.performance_stack.add_named(page_scroll, name)
 
     def _build_processes_page(self) -> None:
         page, content = self._page_box("Processes", "PROCESS TREE  /  NATIVE SIGNALS")
@@ -1508,8 +1524,43 @@ class TmogWindow(Gtk.Window):
                 self.core_graphs.append(graph)
             self._core_graph_types = normalized_types
             self.core_flow.show_all()
+            self._layout_core_grid()
         for graph, value in zip(self.core_graphs, values):
             graph.add(value)
+
+    def _on_core_scroll_size_allocate(self, _widget: Gtk.Widget, allocation: Gdk.Rectangle) -> None:
+        self._layout_core_grid(allocation.width)
+
+    def _layout_core_grid(self, available_width: int | None = None) -> None:
+        core_count = len(self.core_graphs)
+        if not core_count:
+            return
+        width = available_width or self.core_scroll.get_allocated_width()
+        if width <= 1:
+            return
+
+        tile_width = 108
+        tile_height = 70
+        gap = 6
+        capacity = max(1, min(8, core_count, (width + gap) // (tile_width + gap)))
+        row_count = math.ceil(core_count / capacity)
+        aligned_columns = [
+            columns
+            for columns in range(capacity, 0, -1)
+            if math.ceil(core_count / columns) == row_count and core_count % columns == 0
+        ]
+        columns = aligned_columns[0] if aligned_columns else capacity
+        row_count = math.ceil(core_count / columns)
+        content_height = row_count * tile_height + max(0, row_count - 1) * gap + 12
+        desired_height = min(390, max(90, content_height))
+
+        if columns != getattr(self, "_core_grid_columns", None):
+            self.core_flow.set_min_children_per_line(columns)
+            self.core_flow.set_max_children_per_line(columns)
+            self._core_grid_columns = columns
+        if desired_height != getattr(self, "_core_scroll_height", None):
+            self.core_scroll.set_size_request(-1, desired_height)
+            self._core_scroll_height = desired_height
 
     def _update_thermal_sensor_tiles(self, snapshot: SystemSnapshot) -> None:
         sensor_order = [sensor.identifier for sensor in snapshot.thermal_sensors]
