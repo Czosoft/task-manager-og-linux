@@ -12,7 +12,7 @@ import gi
 gi.require_version("Gtk", "3.0")
 gi.require_version("Gdk", "3.0")
 import cairo  # noqa: E402,F401 - registers the PyGObject cairo converter
-from gi.repository import Gdk, GLib, Gtk, Pango  # noqa: E402
+from gi.repository import Gdk, GLib, GObject, Gtk, Pango  # noqa: E402
 
 from .metrics import GpuSnapshot, LinuxMetricsCollector, ProcessInfo, SystemSnapshot, format_bytes, format_duration
 
@@ -524,6 +524,7 @@ class TmogWindow(Gtk.Window):
         self._current_user = getpass.getuser()
         self._timer_id: int | None = None
         self.nav_buttons: dict[str, Gtk.ToggleButton] = {}
+        self.process_cpu_bars_enabled = True
 
         provider = Gtk.CssProvider()
         provider.load_from_data(CSS)
@@ -974,7 +975,20 @@ class TmogWindow(Gtk.Window):
         toolbar.pack_start(kill_button, False, False, 0)
         content.pack_start(toolbar, False, False, 0)
 
-        self.process_store = Gtk.ListStore(int, str, str, str, float, int, int, int, int, str, str, object)
+        self.process_store = Gtk.ListStore(
+            int,
+            str,
+            str,
+            str,
+            float,
+            GObject.TYPE_UINT64,
+            int,
+            GObject.TYPE_UINT64,
+            GObject.TYPE_UINT64,
+            str,
+            str,
+            object,
+        )
         self.process_filter = self.process_store.filter_new()
         self.process_filter.set_visible_func(self._process_visible)
         self.process_view = Gtk.TreeView(model=self.process_filter)
@@ -984,14 +998,15 @@ class TmogWindow(Gtk.Window):
         add_text_column(self.process_view, "Name", 1, expand=True)
         add_text_column(self.process_view, "User", 2, width=110)
         add_text_column(self.process_view, "Status", 3, width=95)
-        self._add_formatted_column(self.process_view, "CPU", 4, lambda value: f"{value:.1f}%", 75)
+        self._add_process_cpu_column()
         self._add_formatted_column(self.process_view, "Memory", 5, format_bytes, 95)
         add_text_column(self.process_view, "Threads", 6, width=75)
         self._add_formatted_column(self.process_view, "Read", 7, format_bytes, 88)
         self._add_formatted_column(self.process_view, "Write", 8, format_bytes, 88)
         add_text_column(self.process_view, "Started", 9, width=130)
         add_text_column(self.process_view, "Command", 10, expand=True)
-        content.pack_start(scrollable(self.process_view), True, True, 0)
+        self.process_scroller = scrollable(self.process_view)
+        content.pack_start(self.process_scroller, True, True, 0)
         self.process_status = Gtk.Label(label="Waiting for process provider", xalign=0)
         self.process_status.get_style_context().add_class("statusbar")
         content.pack_start(self.process_status, False, False, 0)
@@ -1010,6 +1025,31 @@ class TmogWindow(Gtk.Window):
 
         column.set_cell_data_func(renderer, render)
         view.append_column(column)
+
+    def _add_process_cpu_column(self) -> None:
+        text_renderer = Gtk.CellRendererText()
+        bar_renderer = Gtk.CellRendererProgress()
+        column = Gtk.TreeViewColumn("CPU")
+        column.set_sort_column_id(4)
+        column.set_resizable(True)
+        column.set_min_width(90)
+        column.pack_start(text_renderer, True)
+        column.pack_start(bar_renderer, True)
+
+        def render_text(_column, cell, model, tree_iter, _data=None):
+            value = float(model.get_value(tree_iter, 4))
+            cell.set_property("visible", not self.process_cpu_bars_enabled)
+            cell.set_property("text", f"{value:.1f}%")
+
+        def render_bar(_column, cell, model, tree_iter, _data=None):
+            value = max(0.0, min(100.0, float(model.get_value(tree_iter, 4))))
+            cell.set_property("visible", self.process_cpu_bars_enabled)
+            cell.set_property("value", int(round(value)))
+            cell.set_property("text", f"{value:.1f}%")
+
+        column.set_cell_data_func(text_renderer, render_text)
+        column.set_cell_data_func(bar_renderer, render_bar)
+        self.process_view.append_column(column)
 
     def _build_system_page(self) -> None:
         page, content = self._page_box("System Info", "HOST  /  OPERATING SYSTEM")
@@ -1055,7 +1095,7 @@ class TmogWindow(Gtk.Window):
 
     def _build_users_page(self) -> None:
         page, content = self._page_box("Users", "PROCESS OWNERS  /  LIVE")
-        self.user_store = Gtk.ListStore(str, int, float, int)
+        self.user_store = Gtk.ListStore(str, int, float, GObject.TYPE_UINT64)
         view = Gtk.TreeView(model=self.user_store)
         add_text_column(view, "User", 0, expand=True)
         add_text_column(view, "Processes", 1, width=100)
@@ -1092,6 +1132,20 @@ class TmogWindow(Gtk.Window):
         combo.connect("changed", self._refresh_changed)
         row.pack_end(combo, False, False, 0)
         settings_box.pack_start(row, False, False, 0)
+
+        cpu_bar_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=18)
+        cpu_bar_labels = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        cpu_bar_labels.pack_start(Gtk.Label(label="Process CPU pressure bars", xalign=0), False, False, 0)
+        cpu_bar_hint = Gtk.Label(label="Show live utilization bars in the Processes CPU column", xalign=0)
+        cpu_bar_hint.get_style_context().add_class("muted")
+        cpu_bar_labels.pack_start(cpu_bar_hint, False, False, 0)
+        cpu_bar_row.pack_start(cpu_bar_labels, True, True, 0)
+        cpu_bar_switch = Gtk.Switch()
+        cpu_bar_switch.set_active(self.process_cpu_bars_enabled)
+        cpu_bar_switch.set_valign(Gtk.Align.CENTER)
+        cpu_bar_switch.connect("notify::active", self._process_cpu_bars_changed)
+        cpu_bar_row.pack_end(cpu_bar_switch, False, False, 0)
+        settings_box.pack_start(cpu_bar_row, False, False, 0)
         content.pack_start(card("Live updates", settings_box, "green"), False, False, 0)
         about = Gtk.Label(
             label=(
@@ -1113,6 +1167,10 @@ class TmogWindow(Gtk.Window):
                 GLib.source_remove(self._timer_id)
             self._timer_id = GLib.timeout_add_seconds(self.refresh_seconds, self._timer_tick)
             self.request_update()
+
+    def _process_cpu_bars_changed(self, switch: Gtk.Switch, _parameter) -> None:
+        self.process_cpu_bars_enabled = switch.get_active()
+        self.process_view.queue_draw()
 
     def _timer_tick(self) -> bool:
         self.request_update()
@@ -1590,6 +1648,7 @@ class TmogWindow(Gtk.Window):
 
     def _process_view_changed(self, _combo: Gtk.ComboBoxText) -> None:
         if self.snapshot:
+            self._reset_process_scroll = True
             self._render_processes(self.snapshot.processes)
 
     def _selected_process(self) -> ProcessInfo | None:
@@ -1673,7 +1732,15 @@ class TmogWindow(Gtk.Window):
             if filtered_path:
                 self.process_view.get_selection().select_path(filtered_path)
                 self.process_view.scroll_to_cell(filtered_path, None, True, 0.5, 0.0)
+        elif getattr(self, "_reset_process_scroll", False):
+            GLib.idle_add(self._scroll_process_view_to_top)
+        self._reset_process_scroll = False
         self._last_process_render = time.monotonic()
+
+    def _scroll_process_view_to_top(self) -> bool:
+        adjustment = self.process_scroller.get_vadjustment()
+        adjustment.set_value(adjustment.get_lower())
+        return GLib.SOURCE_REMOVE
 
     def _show_process_details(self, view: Gtk.TreeView, path: Gtk.TreePath, _column: Gtk.TreeViewColumn) -> None:
         model = view.get_model()

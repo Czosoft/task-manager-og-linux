@@ -12,7 +12,7 @@
 - Performance：八类资源缩略曲线、分段实时表、P/E 核心分核历史、内存组成、磁盘/网络双曲线、多 GPU 选择器及硬件明细；CPU 总览和逻辑处理器区块可独立收起
 - Network：显示主接口、连接类型、链路状态、MAC、IPv4/IPv6、MTU、链路速度和累计流量
 - Thermals：保留 thermal zone、hwmon 与 NVIDIA 的每个温度传感器，并分别显示实时历史
-- Processes：全部/当前用户/活动/进程树视图、搜索、排序、跟随选择、I/O 与启动时间、双击详情，以及原生信号操作
+- Processes：全部/当前用户/活动/进程树视图、搜索、排序、跟随选择、可切换 CPU 压力条、I/O 与启动时间、双击详情，以及原生信号操作
 - System Info：Ubuntu、内核、CPU、架构、运行时间和系统负载
 - Startup Apps：读取系统与用户的 XDG 自启动项
 - Users：按进程所有者汇总 CPU、内存和进程数
