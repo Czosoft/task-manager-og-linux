@@ -159,6 +159,14 @@ ssh-keygen -t ed25519 -a 64 \
 
 只有以 `.pub` 结尾的文件可以登记到网站。
 
+GitHub 页面要求的是你自己的公钥文件中的完整一行，例如：
+
+```bash
+cat "$HOME/.ssh/id_ed25519_github_publish.pub"
+```
+
+格式应以 `ssh-ed25519` 开头。服务器指纹 `SHA256:...`、`ssh-keyscan` 输出和私钥内容都不能粘贴到 GitHub 的 `SSH Keys` 输入框。
+
 ## 7. 核验服务器主机指纹
 
 ### GitHub
@@ -213,7 +221,37 @@ ssh-keyscan -H -t ed25519 <AIURSOFT_GITLAB_HOST> 2>/dev/null >> "$HOME/.ssh/know
 chmod 0600 "$HOME/.ssh/known_hosts"
 ```
 
-如果使用非 22 端口，命令增加 `-p <端口>`，后面的 SSH 配置也增加 `Port <端口>`。
+如果使用非 22 端口，`-p` 必须写在主机名之前。例如 Aiursoft GitLab 使用 2202 端口时：
+
+```bash
+ssh-keyscan -p 2202 -t ed25519 gitlab.aiursoft.com 2>/dev/null | ssh-keygen -lf -
+```
+
+下面这种参数顺序是错误的：
+
+```bash
+ssh-keyscan -t ed25519 gitlab.aiursoft.com -p 2202
+```
+
+如果正确命令仍显示 `(stdin) is not a public key file`，表示 `ssh-keyscan` 没有取得任何主机公钥。先直接检查服务器返回：
+
+```bash
+ssh-keyscan -p 2202 gitlab.aiursoft.com
+```
+
+完全没有输出时，检查专线连通性、域名、端口和防火墙；有输出但没有 `ssh-ed25519` 时，需要向管理员确认该服务器实际启用的主机密钥类型和官方指纹。
+
+后面的 SSH 配置也必须增加端口：
+
+```sshconfig
+Host aiursoft-gitlab
+    HostName gitlab.aiursoft.com
+    Port 2202
+    User git
+    IdentityFile ~/.ssh/id_ed25519_aiursoft_publish
+    IdentitiesOnly yes
+    StrictHostKeyChecking yes
+```
 
 ## 8. 配置两个 SSH 主机别名
 

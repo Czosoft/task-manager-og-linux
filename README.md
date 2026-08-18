@@ -19,6 +19,27 @@
 - Services：读取 systemd 服务状态
 - 1、2、5 秒采样间隔
 
+## 界面预览
+
+<table>
+  <tr>
+    <td width="50%"><strong>Summary</strong><br><img src="screenshots/summary-beta06.png" alt="TMOG Linux beta06 Summary"></td>
+    <td width="50%"><strong>CPU / logical processors</strong><br><img src="screenshots/performance-cpu-beta06.png" alt="TMOG Linux beta06 CPU logical processors"></td>
+  </tr>
+  <tr>
+    <td width="50%"><strong>CPU / collapsed sections</strong><br><img src="screenshots/performance-cpu-collapsed-beta06.png" alt="TMOG Linux beta06 CPU collapsed sections"></td>
+    <td width="50%"><strong>NVIDIA GPU</strong><br><img src="screenshots/performance-gpu-beta06.png" alt="TMOG Linux beta06 NVIDIA GPU"></td>
+  </tr>
+  <tr>
+    <td width="50%"><strong>Network</strong><br><img src="screenshots/performance-network-beta06.png" alt="TMOG Linux beta06 Network"></td>
+    <td width="50%"><strong>Energy</strong><br><img src="screenshots/performance-energy-beta06.png" alt="TMOG Linux beta06 Energy"></td>
+  </tr>
+  <tr>
+    <td width="50%"><strong>Thermals</strong><br><img src="screenshots/performance-thermals-beta06.png" alt="TMOG Linux beta06 Thermals"></td>
+    <td width="50%"><strong>Process tree</strong><br><img src="screenshots/processes-tree-beta06.png" alt="TMOG Linux beta06 process tree"></td>
+  </tr>
+</table>
+
 核心指标直接读取 Linux 的 `/proc` 与 `/sys`，不依赖 `psutil`。启用 NVIDIA 专有驱动数据时会调用驱动自带的 `nvidia-smi`；systemd 服务只在启动时读取一次。
 
 ## Ubuntu 直接试用
