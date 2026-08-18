@@ -1,18 +1,20 @@
 from __future__ import annotations
 
+import configparser
 import math
 import getpass
 import threading
 import time
 from collections import defaultdict, deque
 from datetime import datetime
+from pathlib import Path
 
 import gi
 
 gi.require_version("Gtk", "3.0")
 gi.require_version("Gdk", "3.0")
 import cairo  # noqa: E402,F401 - registers the PyGObject cairo converter
-from gi.repository import Gdk, GLib, GObject, Gtk, Pango  # noqa: E402
+from gi.repository import Gdk, Gio, GLib, GObject, Gtk, Pango  # noqa: E402
 
 from .metrics import GpuSnapshot, LinuxMetricsCollector, ProcessInfo, SystemSnapshot, format_bytes, format_duration
 
@@ -36,11 +38,26 @@ CORE_GRID_SPACING = 6
 CORE_GRID_BOTTOM_GUARD = 12
 
 
-CSS = b"""
+DARK_CSS = b"""
 * { font-family: Ubuntu, Cantarell, sans-serif; }
 window, .app-root { background: #111310; color: #e8ebe5; }
 headerbar { background: #171916; color: #f4f6f1; border-bottom: 1px solid #30342e; box-shadow: none; }
-headerbar .title { font-size: 14px; font-weight: 600; }
+headerbar .title { color: #f4f6f1; font-size: 14px; font-weight: 600; }
+headerbar .subtitle { color: #aeb5aa; }
+headerbar button.titlebutton,
+headerbar button.titlebutton:backdrop,
+headerbar button.titlebutton image {
+    background: transparent;
+    border-color: transparent;
+    color: #f4f6f1;
+    box-shadow: none;
+    -gtk-icon-shadow: none;
+}
+headerbar button.titlebutton:hover { background: #30342e; color: #ffffff; }
+headerbar button.titlebutton:active { background: #3b4038; color: #ffffff; }
+headerbar button.titlebutton.close:hover { background: #c42b1c; color: #ffffff; }
+.header-action { min-height: 28px; border-radius: 4px; background: #272a25; border: 1px solid #3b4038; color: #dce0d8; box-shadow: none; }
+.header-action:hover { background: #32362f; color: #ffffff; }
 .sidebar { background: #171916; border-right: 1px solid #30342e; }
 .brand { font-size: 22px; font-weight: 700; color: #f1f5ed; padding: 18px 16px 3px 16px; }
 .brand-subtitle { color: #6fe67c; font-size: 9px; padding: 0 16px 16px 16px; }
@@ -108,11 +125,152 @@ switch { background: #353a33; }
 switch:checked { background: #45bd55; }
 progressbar trough { background: #282c27; border: 0; min-height: 5px; }
 progressbar progress { background: #53e767; border: 0; min-height: 5px; }
+.history-graph, .core-graph { background: #131612; color: #bfc9ba; }
+menu, menuitem, popover { background: #20231f; color: #e8ebe5; }
+menuitem:hover { background: #30352e; color: #ffffff; }
 """
+
+
+LIGHT_CSS = b"""
+* { font-family: Inter, "SF Pro Text", "Noto Sans", Ubuntu, Cantarell, sans-serif; }
+window, .app-root { background: #f5f5f7; color: #1d1d1f; }
+headerbar { background: #fbfbfd; color: #1d1d1f; border-bottom: 1px solid #c9c9ce; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08); }
+headerbar .title { color: #1d1d1f; font-size: 14px; font-weight: 600; }
+headerbar .subtitle { color: #55585e; }
+headerbar button.titlebutton,
+headerbar button.titlebutton:backdrop {
+    background: transparent;
+    border-color: transparent;
+    color: #242426;
+    box-shadow: none;
+    -gtk-icon-shadow: none;
+}
+headerbar button.titlebutton image { color: #242426; -gtk-icon-shadow: none; }
+headerbar button.titlebutton:hover { background: #e5e5ea; color: #000000; }
+headerbar button.titlebutton:active { background: #d1d1d6; color: #000000; }
+headerbar button.titlebutton.close:hover { background: #c42b1c; color: #ffffff; }
+headerbar button.titlebutton.close:hover image { color: #ffffff; }
+.header-action { min-height: 28px; border-radius: 5px; background: #ffffff; border: 1px solid #b8bcc3; color: #2c2c2e; box-shadow: 0 1px 1px rgba(0, 0, 0, 0.06); }
+.header-action:hover { background: #ececf1; color: #000000; }
+.sidebar { background: #ececf0; border-right: 1px solid #c9c9ce; }
+.brand { font-size: 22px; font-weight: 700; color: #1d1d1f; padding: 18px 16px 3px 16px; }
+.brand-subtitle { color: #187635; font-size: 9px; padding: 0 16px 16px 16px; }
+.nav-button { background: transparent; border: 0; border-radius: 6px; color: #3f4248; box-shadow: none; padding: 9px 12px; }
+.nav-button:hover { background: #dedee3; color: #1d1d1f; }
+.nav-button:checked { background: #dcecff; color: #0057b8; border-left: 2px solid #0a84ff; }
+.nav-button image { color: #50545b; }
+.nav-button:checked image { color: #0069d9; }
+.sidebar-footer { border-top: 1px solid #c9c9ce; color: #5d6066; font-size: 10px; padding: 12px 16px; }
+.page { background: #f5f5f7; padding: 18px; }
+.page-title { font-size: 28px; font-weight: 400; color: #1d1d1f; }
+.eyebrow { font-size: 9px; color: #187635; }
+.muted { color: #555960; }
+.small { font-size: 10px; }
+.card { background: #ffffff; border: 1px solid #c9c9ce; border-radius: 7px; padding: 10px; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05); }
+.card-title { font-size: 14px; font-weight: 500; color: #2c2c2e; }
+.metric-value { font-size: 24px; font-weight: 400; color: #1d1d1f; }
+.green { color: #087a2c; }
+.orange { color: #bd4500; }
+.yellow { color: #765800; }
+.blue { color: #005ecb; }
+.purple { color: #8e22b7; }
+.red { color: #c12735; }
+.status-live { color: #087a2c; font-size: 10px; }
+.toolbar { background: #ececf0; border-bottom: 1px solid #c9c9ce; padding: 8px 12px; }
+.toolbar button, .compact-button { min-height: 28px; border-radius: 5px; background: #ffffff; border: 1px solid #b8bcc3; color: #2c2c2e; box-shadow: 0 1px 1px rgba(0, 0, 0, 0.05); }
+.toolbar button:hover, .compact-button:hover { background: #e6e6eb; }
+.collapse-button { min-width: 24px; min-height: 24px; padding: 1px; border-radius: 4px; background: transparent; border: 1px solid #b8bcc3; color: #484b51; box-shadow: none; }
+.collapse-button:hover { background: #e6e6eb; color: #1d1d1f; }
+.danger-button { background: #fff1f1; color: #b4232d; border-color: #d9a2a6; }
+entry, searchentry { background: #ffffff; color: #1d1d1f; border: 1px solid #b8bcc3; border-radius: 5px; }
+treeview { background: #ffffff; color: #252527; border: 0; }
+treeview:selected { background: #0a78e3; color: #ffffff; }
+treeview header button { background: #e8e8ed; color: #3f4248; border: 0; border-right: 1px solid #c9c9ce; border-bottom: 1px solid #bfc0c5; border-radius: 0; box-shadow: none; min-height: 28px; }
+treeview.view row:nth-child(even) { background: #f4f4f7; }
+scrollbar { background: #eeeeF2; }
+scrollbar slider { background: #94979d; border-radius: 4px; min-width: 8px; min-height: 8px; }
+.stable-scroll scrollbar { background: transparent; min-width: 7px; }
+.stable-scroll scrollbar.vertical slider,
+.stable-scroll scrollbar.vertical:hover slider {
+    background: rgba(104, 107, 113, 0.74);
+    border-radius: 3px;
+    margin: 1px;
+    min-width: 5px;
+}
+.resource-button { background: transparent; color: #45484e; border: 0; border-radius: 5px; box-shadow: none; padding: 10px; }
+.resource-button:checked { background: #dcecff; color: #0057b8; border-left: 2px solid #0a84ff; }
+.resource-title { font-size: 12px; font-weight: 600; }
+.resource-detail { color: #555960; font-size: 9px; }
+.detail-label { color: #555960; font-size: 9px; }
+.detail-value { color: #1d1d1f; font-size: 12px; }
+.core-grid, .sensor-flow { background: transparent; }
+.sensor-tile { background: #fff9f2; border: 1px solid #d4b98f; border-radius: 6px; padding: 8px; }
+.sensor-name { color: #2c2c2e; font-size: 10px; font-weight: 600; }
+.sensor-source { color: #665b4d; font-size: 8px; }
+.sensor-value { color: #ad4200; font-size: 16px; }
+.section-heading { color: #2c2c2e; font-size: 16px; font-weight: 500; }
+.provider-badge { background: #e3f5e7; border: 1px solid #7fbd8d; border-radius: 5px; color: #106c2a; padding: 4px 8px; font-size: 9px; }
+.provider-badge.partial-provider { background: #fff4ce; border-color: #c8ae4d; color: #675000; }
+.provider-badge.unavailable-provider { background: #e9e9ed; border-color: #b8bac0; color: #555960; }
+.statusbar { border-top: 1px solid #c9c9ce; color: #555960; padding: 6px 10px; font-size: 9px; }
+.unavailable { color: #555960; font-size: 18px; }
+.separator { background: #c9c9ce; min-height: 1px; min-width: 1px; }
+combobox button { background: #ffffff; color: #1d1d1f; border: 1px solid #b8bcc3; }
+switch { background: #b8bac0; }
+switch:checked { background: #0a84ff; }
+progressbar trough { background: #dedee3; border: 0; min-height: 5px; }
+progressbar progress { background: #0a84ff; border: 0; min-height: 5px; }
+.history-graph, .core-graph { background: #ffffff; color: #3f4248; }
+menu, menuitem, popover { background: #ffffff; color: #1d1d1f; }
+menuitem:hover { background: #e5e5ea; color: #000000; }
+"""
+
+
+THEME_CHOICES = ("system", "dark", "light")
 
 
 def rgba(color: tuple[float, float, float], alpha: float = 1.0) -> tuple[float, float, float, float]:
     return color[0], color[1], color[2], alpha
+
+
+def theme_config_path() -> Path:
+    return Path(GLib.get_user_config_dir()) / "tmog-linux" / "settings.ini"
+
+
+def load_theme_preference(path: Path | None = None) -> str:
+    parser = configparser.ConfigParser()
+    try:
+        parser.read(path or theme_config_path(), encoding="utf-8")
+        preference = parser.get("appearance", "theme", fallback="system").lower()
+    except (configparser.Error, OSError):
+        return "system"
+    return preference if preference in THEME_CHOICES else "system"
+
+
+def save_theme_preference(preference: str, path: Path | None = None) -> None:
+    if preference not in THEME_CHOICES:
+        return
+    destination = path or theme_config_path()
+    parser = configparser.ConfigParser()
+    parser["appearance"] = {"theme": preference}
+    try:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        with destination.open("w", encoding="utf-8") as stream:
+            parser.write(stream)
+    except OSError:
+        pass
+
+
+def style_rgb(widget: Gtk.Widget, *, background: bool = False) -> tuple[float, float, float]:
+    style = widget.get_style_context()
+    state = style.get_state()
+    color = style.get_background_color(state) if background else style.get_color(state)
+    return color.red, color.green, color.blue
+
+
+def theme_alpha(widget: Gtk.Widget, dark: float, light: float) -> float:
+    window = widget.get_toplevel()
+    return light if getattr(window, "_effective_theme", "dark") == "light" else dark
 
 
 class HistoryGraph(Gtk.DrawingArea):
@@ -124,6 +282,7 @@ class HistoryGraph(Gtk.DrawingArea):
         self.fixed_max = fixed_max
         self.primary: deque[float] = deque(maxlen=max_points)
         self.secondary: deque[float] = deque(maxlen=max_points)
+        self.get_style_context().add_class("history-graph")
         self.connect("draw", self._draw)
 
     def add(self, value: float, secondary: float | None = None) -> None:
@@ -153,10 +312,10 @@ class HistoryGraph(Gtk.DrawingArea):
     def _draw(self, _widget, context) -> bool:
         allocation = self.get_allocation()
         width, height = allocation.width, allocation.height
-        context.set_source_rgb(0.075, 0.085, 0.071)
+        context.set_source_rgb(*style_rgb(self, background=True))
         context.paint()
         context.set_line_width(1)
-        context.set_source_rgba(*rgba(self.color, 0.13))
+        context.set_source_rgba(*rgba(self.color, theme_alpha(self, 0.13, 0.22)))
         for index in range(1, 8):
             x = index * width / 8
             context.move_to(x, 0)
@@ -203,7 +362,7 @@ class SegmentMeter(Gtk.DrawingArea):
         for index in range(segments):
             y = bottom - (index + 1) * meter_height / segments
             active = index < math.ceil(self.value / 100.0 * segments)
-            context.set_source_rgba(*rgba(self.color, 0.9 if active else 0.12))
+            context.set_source_rgba(*rgba(self.color, 0.9 if active else theme_alpha(self, 0.12, 0.2)))
             context.rectangle(6, y + 2, width - 12, max(2, meter_height / segments - 3))
             context.fill()
         context.set_font_size(9)
@@ -233,7 +392,9 @@ class SegmentBar(Gtk.DrawingArea):
         segment_width = max(2.0, (width - gap * (self.segments - 1)) / self.segments)
         active_count = math.ceil(self.value / 100.0 * self.segments)
         for index in range(self.segments):
-            context.set_source_rgba(*rgba(self.color, 0.95 if index < active_count else 0.12))
+            context.set_source_rgba(
+                *rgba(self.color, 0.95 if index < active_count else theme_alpha(self, 0.12, 0.2))
+            )
             context.rectangle(index * (segment_width + gap), 1, segment_width, max(2, height - 2))
             context.fill()
         return False
@@ -254,7 +415,7 @@ class Sparkline(Gtk.DrawingArea):
     def _draw(self, _widget, context) -> bool:
         allocation = self.get_allocation()
         width, height = allocation.width, allocation.height
-        context.set_source_rgba(*rgba(self.color, 0.08))
+        context.set_source_rgba(*rgba(self.color, theme_alpha(self, 0.08, 0.13)))
         context.rectangle(0, 0, width, height)
         context.fill()
         if not self.values:
@@ -335,6 +496,7 @@ class CoreGraph(Gtk.DrawingArea):
         self.values: deque[float] = deque(maxlen=45)
         self.density = "full"
         self.set_size_request(108, 70)
+        self.get_style_context().add_class("core-graph")
         self.connect("draw", self._draw)
 
     def add(self, value: float) -> None:
@@ -353,9 +515,9 @@ class CoreGraph(Gtk.DrawingArea):
     def _draw(self, _widget, context) -> bool:
         allocation = self.get_allocation()
         width, height = allocation.width, allocation.height
-        context.set_source_rgb(0.07, 0.078, 0.066)
+        context.set_source_rgb(*style_rgb(self, background=True))
         context.paint()
-        context.set_source_rgba(*rgba(self.color, 0.48))
+        context.set_source_rgba(*rgba(self.color, theme_alpha(self, 0.48, 0.62)))
         context.set_line_width(1)
         context.rectangle(0.5, 0.5, max(1, width - 1), max(1, height - 1))
         context.stroke()
@@ -365,7 +527,7 @@ class CoreGraph(Gtk.DrawingArea):
             context.fill()
             context.select_font_face("Ubuntu", 0, 0)
             context.set_font_size(7.5)
-            context.set_source_rgb(0.75, 0.79, 0.73)
+            context.set_source_rgb(*style_rgb(self))
             context.move_to(5, height / 2 + 3)
             context.show_text(f"CPU {self.index:02d}")
             context.set_source_rgba(*rgba(self.color, 1.0))
@@ -373,7 +535,7 @@ class CoreGraph(Gtk.DrawingArea):
             context.show_text(f"{self.value:.0f}%")
             return False
 
-        context.set_source_rgba(*rgba(self.color, 0.12))
+        context.set_source_rgba(*rgba(self.color, theme_alpha(self, 0.12, 0.2)))
         context.set_line_width(1)
         for fraction in (0.25, 0.5, 0.75):
             context.move_to(0, height * fraction)
@@ -402,7 +564,7 @@ class CoreGraph(Gtk.DrawingArea):
             context.stroke()
         context.select_font_face("Ubuntu", 0, 0)
         context.set_font_size(7.5 if self.density == "compact" else 8.5)
-        context.set_source_rgb(0.75, 0.79, 0.73)
+        context.set_source_rgb(*style_rgb(self))
         context.move_to(6, 12)
         if self.density == "compact" and self.core_type:
             type_text = f" / {self.core_type}"
@@ -564,19 +726,31 @@ class TmogWindow(Gtk.Window):
         self._timer_id: int | None = None
         self.nav_buttons: dict[str, Gtk.ToggleButton] = {}
         self.process_cpu_bars_enabled = True
+        self.theme_preference = load_theme_preference()
+        self._gtk_settings = Gtk.Settings.get_default()
+        self._desktop_settings = self._get_desktop_interface_settings()
+        self._effective_theme = self._resolve_theme(self.theme_preference)
 
-        provider = Gtk.CssProvider()
-        provider.load_from_data(CSS)
-        Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default(), provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+        self._style_provider = Gtk.CssProvider()
+        self._style_provider.load_from_data(DARK_CSS if self._effective_theme == "dark" else LIGHT_CSS)
+        Gtk.StyleContext.add_provider_for_screen(
+            Gdk.Screen.get_default(), self._style_provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
+        )
+        if self._gtk_settings is not None:
+            self._gtk_settings.connect("notify::gtk-theme-name", self._on_system_theme_changed)
+            self._gtk_settings.connect("notify::gtk-application-prefer-dark-theme", self._on_system_theme_changed)
+        if self._desktop_settings is not None:
+            self._desktop_settings.connect("changed::color-scheme", self._on_system_theme_changed)
 
         header = Gtk.HeaderBar()
+        self.headerbar = header
         header.set_show_close_button(True)
         header.props.title = "Task Manager OG // Linux"
         header.props.subtitle = "UNOFFICIAL COMMUNITY BUILD"
         self.live_label = Gtk.Label(label="● LIVE")
         self.live_label.get_style_context().add_class("status-live")
         header.pack_start(self.live_label)
-        refresh = icon_button("view-refresh-symbolic", "Refresh now")
+        refresh = icon_button("view-refresh-symbolic", "Refresh now", "header-action")
         refresh.connect("clicked", lambda _button: self.request_update())
         header.pack_end(refresh)
         self.set_titlebar(header)
@@ -603,6 +777,57 @@ class TmogWindow(Gtk.Window):
         self.request_update()
         self._timer_id = GLib.timeout_add_seconds(self.refresh_seconds, self._timer_tick)
         threading.Thread(target=self._load_slow_lists, daemon=True).start()
+
+    @staticmethod
+    def _get_desktop_interface_settings() -> Gio.Settings | None:
+        source = Gio.SettingsSchemaSource.get_default()
+        if source is None:
+            return None
+        schema = source.lookup("org.gnome.desktop.interface", True)
+        if schema is None or not schema.has_key("color-scheme"):
+            return None
+        return Gio.Settings.new_full(schema, None, None)
+
+    def _system_prefers_dark(self) -> bool:
+        if self._desktop_settings is not None:
+            try:
+                color_scheme = self._desktop_settings.get_string("color-scheme").lower()
+                if color_scheme == "prefer-dark":
+                    return True
+                if color_scheme == "prefer-light":
+                    return False
+            except GLib.Error:
+                pass
+        if self._gtk_settings is None:
+            return False
+        prefer_dark = bool(self._gtk_settings.get_property("gtk-application-prefer-dark-theme"))
+        theme_name = str(self._gtk_settings.get_property("gtk-theme-name") or "").lower()
+        return prefer_dark or "dark" in theme_name
+
+    def _resolve_theme(self, preference: str) -> str:
+        if preference in ("dark", "light"):
+            return preference
+        return "dark" if self._system_prefers_dark() else "light"
+
+    def _apply_theme(self, preference: str, *, persist: bool = False) -> None:
+        if preference not in THEME_CHOICES:
+            return
+        self.theme_preference = preference
+        if persist:
+            save_theme_preference(preference)
+        effective_theme = self._resolve_theme(preference)
+        if effective_theme == self._effective_theme:
+            return
+        self._effective_theme = effective_theme
+        self._style_provider.load_from_data(DARK_CSS if effective_theme == "dark" else LIGHT_CSS)
+        screen = Gdk.Screen.get_default()
+        if screen is not None:
+            Gtk.StyleContext.reset_widgets(screen)
+        self.queue_draw()
+
+    def _on_system_theme_changed(self, *_args) -> None:
+        if self.theme_preference == "system":
+            self._apply_theme("system")
 
     def _build_sidebar(self) -> Gtk.Box:
         sidebar = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
@@ -1158,6 +1383,24 @@ class TmogWindow(Gtk.Window):
 
     def _build_settings_page(self) -> None:
         page, content = self._page_box("Settings", "DISPLAY  /  SAMPLING")
+        appearance_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        theme_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=18)
+        theme_labels = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        theme_labels.pack_start(Gtk.Label(label="Application theme", xalign=0), False, False, 0)
+        theme_hint = Gtk.Label(label="Follow AnduinOS / Ubuntu, or keep a fixed appearance", xalign=0)
+        theme_hint.get_style_context().add_class("muted")
+        theme_labels.pack_start(theme_hint, False, False, 0)
+        theme_row.pack_start(theme_labels, True, True, 0)
+        self.theme_combo = Gtk.ComboBoxText()
+        self.theme_combo.append("system", "Follow system")
+        self.theme_combo.append("dark", "Dark")
+        self.theme_combo.append("light", "Light")
+        self.theme_combo.set_active_id(self.theme_preference)
+        self.theme_combo.connect("changed", self._theme_changed)
+        theme_row.pack_end(self.theme_combo, False, False, 0)
+        appearance_box.pack_start(theme_row, False, False, 0)
+        content.pack_start(card("Appearance", appearance_box, "blue"), False, False, 0)
+
         settings_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
         row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=18)
         labels = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
@@ -1199,6 +1442,11 @@ class TmogWindow(Gtk.Window):
         about.get_style_context().add_class("muted")
         content.pack_start(card("About this build", about, "blue"), False, False, 0)
         self.stack.add_named(page, "settings")
+
+    def _theme_changed(self, combo: Gtk.ComboBoxText) -> None:
+        preference = combo.get_active_id()
+        if preference:
+            self._apply_theme(preference, persist=True)
 
     def _refresh_changed(self, combo: Gtk.ComboBoxText) -> None:
         value = combo.get_active_id()

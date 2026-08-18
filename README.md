@@ -8,6 +8,8 @@
   <img alt="AnduinOS supported" src="https://img.shields.io/badge/AnduinOS-supported-48B04B?style=flat-square">
   <img alt="GTK 3" src="https://img.shields.io/badge/GTK-3-4A90D9?style=flat-square&amp;logo=gtk&amp;logoColor=white">
   <img alt="Python 3.10 or newer" src="https://img.shields.io/badge/Python-3.10%2B-3776AB?style=flat-square&amp;logo=python&amp;logoColor=white">
+  <img alt="Release beta06.3" src="https://img.shields.io/badge/release-beta06.3-0A84FF?style=flat-square">
+  <img alt="Dark and light themes" src="https://img.shields.io/badge/themes-dark%20%7C%20light-55585E?style=flat-square">
   <img alt="MIT License" src="https://img.shields.io/badge/license-MIT-F2C94C?style=flat-square">
 </p>
 
@@ -16,9 +18,16 @@
 > **非官方社区项目**  
 > 本项目的视觉与信息架构参考 [Task Manager OG](https://tmog.org/)，代码完全独立实现。它不是 Plummers' Software LLC 发布或认可的 Linux 移植版，也不包含官方应用的源码、商标素材或二进制文件。
 
-<p align="center">
-  <img src="screenshots/summary-latest.png" alt="Task Manager OG Linux summary dashboard" width="100%">
-</p>
+<table>
+  <tr>
+    <td width="50%" align="center"><strong>Dark</strong></td>
+    <td width="50%" align="center"><strong>Light</strong></td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="screenshots/summary-dark-latest.png" alt="Task Manager OG Linux dark summary dashboard"></td>
+    <td width="50%"><img src="screenshots/summary-light-latest.png" alt="Task Manager OG Linux light summary dashboard"></td>
+  </tr>
+</table>
 
 ## 功能亮点
 
@@ -31,8 +40,21 @@
 | **Energy / Thermals** | 电池或系统输入、Intel RAPL、NVIDIA 设备功耗，以及 thermal、hwmon、NVIDIA 独立传感器历史 |
 | **Processes** | 全部、当前用户、活动和进程树视图；搜索、排序、CPU 压力条、I/O、启动时间、详情和信号操作 |
 | **System** | 系统信息、XDG 自启动项、用户资源汇总和 systemd 服务状态 |
+| **Appearance** | 跟随 AnduinOS/Ubuntu 系统主题，也可以固定使用深色或浅色；标题栏、表格与自绘图表同步切换 |
 
 CPU 总览与逻辑处理器区域可以分别收起。收起 Overall 后，逻辑处理器网格会立即重新计算布局并切换到更高的图表；外层页面负责统一滚动，不会再产生遮挡观察内容的内层滚动条。
+
+## 深浅主题
+
+`Settings > Appearance` 提供三种应用主题：
+
+| 选项 | 行为 |
+| --- | --- |
+| **Follow system** | 默认选项；跟随 AnduinOS/Ubuntu 的系统外观，系统主题变化后应用自动重绘 |
+| **Dark** | 固定使用 TMOG 深色监控界面，不受系统浅色样式影响 |
+| **Light** | 固定使用高对比中性白界面，采用冷灰层级与蓝色选中状态 |
+
+深浅模式不仅切换窗口背景，也会同步更新标题栏按钮、侧栏、卡片、表格、滚动条以及 CPU/GPU 等自绘图表。用户选择保存在 `~/.config/tmog-linux/settings.ini`，重新启动后继续生效。
 
 ## 最新界面
 
@@ -135,7 +157,7 @@ python3 -m unittest discover -s tests -v
 
 - `tmog_linux/app.py`：GTK 界面与响应式布局
 - `tmog_linux/metrics.py`：Linux 指标采集与解析
-- `tests/`：不依赖 GTK 的解析器测试
+- `tests/`：指标解析与外观配置测试
 - `tools/capture_ui.py`：README 截图与界面几何验证
 
 ## License

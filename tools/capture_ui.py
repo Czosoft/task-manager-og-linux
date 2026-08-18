@@ -22,6 +22,11 @@ def main() -> int:
         raise SystemExit("usage: capture_ui.py OUTPUT.png [PAGE] [PERFORMANCE_RESOURCE]")
     output = Path(sys.argv[1])
     window = TmogWindow()
+    capture_theme = os.environ.get("TMOG_CAPTURE_THEME")
+    if capture_theme:
+        if capture_theme not in ("system", "dark", "light"):
+            raise SystemExit("TMOG_CAPTURE_THEME must be system, dark, or light")
+        window._apply_theme(capture_theme)
     capture_size = os.environ.get("TMOG_CAPTURE_SIZE")
     if capture_size:
         try:
@@ -59,8 +64,9 @@ def main() -> int:
 
     def capture() -> bool:
         root = window.get_child()
-        allocation = root.get_allocation()
-        print(f"capturing {window.stack.get_visible_child_name()}")
+        capture_widget = window if os.environ.get("TMOG_CAPTURE_TITLEBAR") == "1" else root
+        allocation = capture_widget.get_allocation()
+        print(f"capturing {window.stack.get_visible_child_name()} in {window._effective_theme} theme")
         if (
             window.stack.get_visible_child_name() == "performance"
             and window.performance_stack.get_visible_child_name() == "cpu"
@@ -96,7 +102,7 @@ def main() -> int:
         output.parent.mkdir(parents=True, exist_ok=True)
         surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, allocation.width, allocation.height)
         context = cairo.Context(surface)
-        root.draw(context)
+        capture_widget.draw(context)
         surface.write_to_png(str(output))
         window.destroy()
         return GLib.SOURCE_REMOVE
