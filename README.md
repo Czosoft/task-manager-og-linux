@@ -1,109 +1,143 @@
-# Task Manager OG // Linux
+<div align="center">
 
-一个面向 Ubuntu 的原生 GTK 系统监视器，视觉与信息架构参考了 [TMOG](https://tmog.org/)，代码完全独立实现。
+<h1>Task Manager OG // Linux</h1>
+<p><strong>面向 Ubuntu 与 AnduinOS 的原生 GTK 系统监视器</strong></p>
+<p>实时观察 CPU、内存、GPU、磁盘、网络、功耗、温度、进程与系统服务。</p>
+<p>
+  <img alt="Ubuntu 22.04 and 24.04" src="https://img.shields.io/badge/Ubuntu-22.04%20%7C%2024.04-E95420?style=flat-square&amp;logo=ubuntu&amp;logoColor=white">
+  <img alt="AnduinOS supported" src="https://img.shields.io/badge/AnduinOS-supported-48B04B?style=flat-square">
+  <img alt="GTK 3" src="https://img.shields.io/badge/GTK-3-4A90D9?style=flat-square&amp;logo=gtk&amp;logoColor=white">
+  <img alt="Python 3.10 or newer" src="https://img.shields.io/badge/Python-3.10%2B-3776AB?style=flat-square&amp;logo=python&amp;logoColor=white">
+  <img alt="MIT License" src="https://img.shields.io/badge/license-MIT-F2C94C?style=flat-square">
+</p>
 
-> 这是非官方社区版本，不是 Plummers' Software LLC 发布或认可的 Linux 移植版。项目不包含官方应用的源码、商标素材或二进制文件。
+</div>
 
-![TMOG Linux Summary](tmog-linux-preview.png)
+> **非官方社区项目**  
+> 本项目的视觉与信息架构参考 [Task Manager OG](https://tmog.org/)，代码完全独立实现。它不是 Plummers' Software LLC 发布或认可的 Linux 移植版，也不包含官方应用的源码、商标素材或二进制文件。
 
-## 已实现
+<p align="center">
+  <img src="screenshots/summary-latest.png" alt="Task Manager OG Linux summary dashboard" width="100%">
+</p>
 
-- Summary 驾驶舱：CPU、频率、温度、GPU、内存、磁盘、网络和电源实时状态
-- Performance：八类资源缩略曲线、分段实时表、P/E 核心分核历史、内存组成、磁盘/网络双曲线、多 GPU 选择器及硬件明细；CPU 总览和逻辑处理器区块可独立收起
-- Network：显示主接口、连接类型、链路状态、MAC、IPv4/IPv6、MTU、链路速度和累计流量
-- Thermals：保留 thermal zone、hwmon 与 NVIDIA 的每个温度传感器，并分别显示实时历史
-- Processes：全部/当前用户/活动/进程树视图、搜索、排序、跟随选择、可切换 CPU 压力条、I/O 与启动时间、双击详情，以及原生信号操作
-- System Info：Ubuntu、内核、CPU、架构、运行时间和系统负载
-- Startup Apps：读取系统与用户的 XDG 自启动项
-- Users：按进程所有者汇总 CPU、内存和进程数
-- Services：读取 systemd 服务状态
-- 1、2、5 秒采样间隔
+## 功能亮点
 
-## 界面预览
+| 区域 | 能力 |
+| --- | --- |
+| **Summary** | CPU、频率、温度、GPU、内存、磁盘、网络和可观测功耗集中展示 |
+| **CPU** | 总体与内核时间曲线、P/E 核心识别、逻辑处理器历史；按窗口大小在完整、紧凑和数字视图间自动调整 |
+| **GPU** | Intel、AMD 与 NVIDIA 适配器；多 GPU 选择器、利用率、显存、频率、温度、功耗和风扇 |
+| **Network** | 主接口、连接类型、链路状态、速率、MAC、IPv4/IPv6、MTU、累计流量与收发曲线 |
+| **Energy / Thermals** | 电池或系统输入、Intel RAPL、NVIDIA 设备功耗，以及 thermal、hwmon、NVIDIA 独立传感器历史 |
+| **Processes** | 全部、当前用户、活动和进程树视图；搜索、排序、CPU 压力条、I/O、启动时间、详情和信号操作 |
+| **System** | 系统信息、XDG 自启动项、用户资源汇总和 systemd 服务状态 |
+
+CPU 总览与逻辑处理器区域可以分别收起。收起 Overall 后，逻辑处理器网格会立即重新计算布局并切换到更高的图表；外层页面负责统一滚动，不会再产生遮挡观察内容的内层滚动条。
+
+## 最新界面
 
 <table>
   <tr>
-    <td width="50%"><strong>Summary</strong><br><img src="screenshots/summary-beta06.png" alt="TMOG Linux beta06 Summary"></td>
-    <td width="50%"><strong>CPU / logical processors</strong><br><img src="screenshots/performance-cpu-beta06.png" alt="TMOG Linux beta06 CPU logical processors"></td>
+    <td width="50%"><strong>自适应 CPU 网格</strong><br><img src="screenshots/performance-cpu-latest.png" alt="Adaptive CPU logical processor grid"></td>
+    <td width="50%"><strong>NVIDIA GPU / nvidia-smi</strong><br><img src="screenshots/performance-gpu-latest.png" alt="NVIDIA GPU metrics from nvidia-smi"></td>
   </tr>
   <tr>
-    <td width="50%"><strong>CPU / collapsed sections</strong><br><img src="screenshots/performance-cpu-collapsed-beta06.png" alt="TMOG Linux beta06 CPU collapsed sections"></td>
-    <td width="50%"><strong>NVIDIA GPU</strong><br><img src="screenshots/performance-gpu-beta06.png" alt="TMOG Linux beta06 NVIDIA GPU"></td>
-  </tr>
-  <tr>
-    <td width="50%"><strong>Network</strong><br><img src="screenshots/performance-network-beta06.png" alt="TMOG Linux beta06 Network"></td>
-    <td width="50%"><strong>Energy</strong><br><img src="screenshots/performance-energy-beta06.png" alt="TMOG Linux beta06 Energy"></td>
-  </tr>
-  <tr>
-    <td width="50%"><strong>Thermals</strong><br><img src="screenshots/performance-thermals-beta06.png" alt="TMOG Linux beta06 Thermals"></td>
-    <td width="50%"><strong>Process tree</strong><br><img src="screenshots/processes-tree-beta06.png" alt="TMOG Linux beta06 process tree"></td>
+    <td colspan="2"><strong>Process tree</strong><br><img src="screenshots/processes-tree-latest.png" alt="Linux process tree"></td>
   </tr>
 </table>
 
-核心指标直接读取 Linux 的 `/proc` 与 `/sys`，不依赖 `psutil`。启用 NVIDIA 专有驱动数据时会调用驱动自带的 `nvidia-smi`；systemd 服务只在启动时读取一次。
+<details>
+<summary><strong>查看更多 Performance 页面</strong></summary>
+<br>
+<table>
+  <tr>
+    <td width="50%"><strong>Network</strong><br><img src="screenshots/performance-network-latest.png" alt="Linux network throughput and interface details"></td>
+    <td width="50%"><strong>Energy</strong><br><img src="screenshots/performance-energy-latest.png" alt="Observable Linux component power"></td>
+  </tr>
+  <tr>
+    <td colspan="2"><strong>Thermals</strong><br><img src="screenshots/performance-thermals-latest.png" alt="Linux temperature sensors"></td>
+  </tr>
+</table>
+</details>
 
-## Ubuntu 直接试用
+## 快速开始
 
-支持 Ubuntu 22.04、24.04 及更新版本的 GNOME/X11/Wayland 桌面。
+支持 Ubuntu 22.04、Ubuntu 24.04、AnduinOS，以及提供 GTK 3 的兼容 Linux 桌面。无需创建 Python 虚拟环境，也不需要执行 `pip install`。
 
 ```bash
 sudo apt update
-sudo apt install -y python3 python3-gi python3-gi-cairo python3-cairo gir1.2-gtk-3.0
+sudo apt install -y \
+  python3 python3-gi python3-gi-cairo python3-cairo gir1.2-gtk-3.0
 
 cd task-manager-og-linux
 chmod +x run.sh install.sh uninstall.sh
 ./run.sh
 ```
 
-不需要建立 Python 虚拟环境，也不需要执行 `pip install`。
-
-## 安装到应用菜单
+### 安装到应用菜单
 
 ```bash
 ./install.sh
 ```
 
-安装范围仅为当前用户。完成后可以从 Ubuntu 应用菜单打开 `Task Manager OG // Linux`，也可以在终端运行：
+安装范围仅为当前用户。完成后可以从应用菜单打开 `Task Manager OG // Linux`，也可以运行：
 
 ```bash
 tmog-linux
 ```
 
-卸载：
+卸载时运行：
 
 ```bash
 ./uninstall.sh
 ```
 
-## 权限说明
+## 原生数据来源
 
-- 普通用户只能结束自己有权限控制的进程。
-- PID 1 和监视器自身会被保护，不能从界面结束。
-- 不建议用 `sudo ./run.sh` 启动整个界面。需要管理系统服务时继续使用 `systemctl` 或 Ubuntu 自带的管理工具。
-- Services 与 Startup Apps 当前为只读，避免监视器意外修改系统启动状态。
+核心指标直接读取 Linux 的 `/proc`、`/sys` 和 ioctl，不依赖 `psutil`。
 
-## 硬件数据可用性
+| 指标 | 主要来源 |
+| --- | --- |
+| CPU、内存、进程 | `/proc/stat`、`/proc/meminfo`、`/proc/[pid]` |
+| 磁盘 | `/proc/diskstats`、`/sys/block`；排除 loop、ram 和 zram |
+| 网络 | `/proc/net/dev`、`/proc/net/if_inet6`、sysfs 与 Linux ioctl |
+| Intel / AMD GPU | DRM sysfs、客户端 DRM `fdinfo`、`gpu_busy_percent` |
+| NVIDIA GPU | 驱动附带的 `nvidia-smi` |
+| 温度 | `/sys/class/thermal`、`/sys/class/hwmon`、`nvidia-smi` |
+| 功耗 | 电池或系统输入遥测、Intel RAPL、NVIDIA 设备功耗 |
+| 服务与自启动 | systemd、系统和用户 XDG autostart 目录 |
 
-不同内核和驱动暴露的数据并不相同：
+systemd 服务列表只在启动时读取一次，避免持续扫描产生额外负担。
 
-- CPU 与主板温度来自 `/sys/class/thermal` 和 `/sys/class/hwmon`；页面会保留每个可读传感器。虚拟机、WSL 或部分主板可能不提供。
-- GPU 型号、驱动、PCI 地址、频率和 Render 节点来自 DRM/sysfs。AMD 优先读取 `gpu_busy_percent`；Intel `i915`/`xe` 会读取可访问客户端的 DRM `fdinfo` 忙碌计数，并明确标注数据范围。
-- Intel UHD 集成显卡使用共享系统内存，因此不会伪造 VRAM 容量；页面会显示 `Shared system memory`。
-- NVIDIA 专有驱动通过随驱动安装的 `nvidia-smi` 读取每张独显的利用率、显存、频率、温度、功耗和风扇。Intel 核显与 NVIDIA 独显会同时出现在 GPU 选择器中。
-- 功耗优先使用电池/系统输入遥测；台式机还会读取 Intel RAPL 的 CPU package 功耗，并合计 `nvidia-smi` 返回的 NVIDIA 设备功耗。
-- 当只有 CPU/GPU 分项可用时，界面会标为 `CPU package + GPU device`。这个数值是可观测部件之和，不会冒充墙插端的整机功耗。
-- Network 的地址与接口信息来自 sysfs、Linux ioctl 和 `/proc/net/if_inet6`。
-- 磁盘统计聚合 `/sys/block` 中的物理设备，并排除 loop、ram 和 zram 设备。
+## 硬件数据说明
 
-这些指标缺失时界面会显示 `N/A`，其他监控功能仍可正常工作。
+- 不同内核、驱动和固件暴露的数据不同；不可读取的指标会明确显示 `N/A`，不会用推算值冒充传感器数据。
+- Intel UHD 集成显卡使用共享系统内存，界面会显示 `Shared system memory`，不会伪造独立显存容量。
+- Intel 核显与 NVIDIA 独显可以同时出现在 GPU 选择器中。NVIDIA 专有驱动可提供每张独显的利用率、显存、频率、温度、功耗和风扇信息。
+- 功耗可能只覆盖可观测部件。当只有 CPU package 或 GPU device 数据时，界面会标明来源，不会将其称为墙插端整机功耗。
+- 虚拟机、WSL 或部分主板可能不提供完整温度、电池、风扇或 CPU package 功耗数据。
 
-## 开发检查
+## 权限与安全
 
-解析器测试不需要 GTK，因此可以单独运行：
+- 普通用户只能控制自己有权限操作的进程。
+- PID 1 与监视器自身受到保护，不能从界面结束。
+- 不建议使用 `sudo ./run.sh` 启动整个界面。管理系统服务时请继续使用 `systemctl` 或系统自带工具。
+- Services 与 Startup Apps 当前保持只读，避免监视器意外修改系统启动状态。
+
+## 开发与验证
 
 ```bash
+python3 -m compileall -q tmog_linux tests tools
 python3 -m unittest discover -s tests -v
-python3 -m compileall -q tmog_linux tests
 ```
 
-项目入口是 `python3 -m tmog_linux`，采集器位于 `tmog_linux/metrics.py`，GTK 界面位于 `tmog_linux/app.py`。
+项目入口是 `python3 -m tmog_linux`：
+
+- `tmog_linux/app.py`：GTK 界面与响应式布局
+- `tmog_linux/metrics.py`：Linux 指标采集与解析
+- `tests/`：不依赖 GTK 的解析器测试
+- `tools/capture_ui.py`：README 截图与界面几何验证
+
+## License
+
+独立实现部分以 [MIT License](LICENSE) 发布。Task Manager OG 名称及原项目相关权利归各自权利人所有。

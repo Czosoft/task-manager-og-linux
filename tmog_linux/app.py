@@ -26,6 +26,15 @@ COLORS = {
     "red": (1.0, 0.31, 0.35),
 }
 
+CORE_GRAPH_SIZES = {
+    "expanded": (108, 86),
+    "full": (108, 70),
+    "compact": (82, 54),
+    "numeric": (62, 34),
+}
+CORE_GRID_SPACING = 6
+CORE_GRID_BOTTOM_GUARD = 12
+
 
 CSS = b"""
 * { font-family: Ubuntu, Cantarell, sans-serif; }
@@ -82,7 +91,7 @@ scrollbar slider { background: #444940; border-radius: 4px; min-width: 8px; min-
 .resource-detail { color: #858b82; font-size: 9px; }
 .detail-label { color: #7f867c; font-size: 9px; }
 .detail-value { color: #e9ede6; font-size: 12px; }
-.core-flow, .sensor-flow { background: transparent; }
+.core-grid, .sensor-flow { background: transparent; }
 .sensor-tile { background: #151714; border: 1px solid #574c34; border-radius: 4px; padding: 8px; }
 .sensor-name { color: #dfe4db; font-size: 10px; font-weight: 600; }
 .sensor-source { color: #857d6d; font-size: 8px; }
@@ -324,12 +333,21 @@ class CoreGraph(Gtk.DrawingArea):
         self.color = COLORS["blue"] if core_type == "P" else COLORS["green"]
         self.value = 0.0
         self.values: deque[float] = deque(maxlen=45)
+        self.density = "full"
         self.set_size_request(108, 70)
         self.connect("draw", self._draw)
 
     def add(self, value: float) -> None:
         self.value = max(0.0, min(100.0, value))
         self.values.append(self.value)
+        self.queue_draw()
+
+    def set_density(self, density: str) -> None:
+        if density == self.density:
+            return
+        self.density = density
+        width, height = CORE_GRAPH_SIZES[density]
+        self.set_size_request(width, height)
         self.queue_draw()
 
     def _draw(self, _widget, context) -> bool:
@@ -341,6 +359,20 @@ class CoreGraph(Gtk.DrawingArea):
         context.set_line_width(1)
         context.rectangle(0.5, 0.5, max(1, width - 1), max(1, height - 1))
         context.stroke()
+        if self.density == "numeric":
+            context.set_source_rgba(*rgba(self.color, 0.35))
+            context.rectangle(1, max(1, height - 4), max(0, (width - 2) * self.value / 100.0), 3)
+            context.fill()
+            context.select_font_face("Ubuntu", 0, 0)
+            context.set_font_size(7.5)
+            context.set_source_rgb(0.75, 0.79, 0.73)
+            context.move_to(5, height / 2 + 3)
+            context.show_text(f"CPU {self.index:02d}")
+            context.set_source_rgba(*rgba(self.color, 1.0))
+            context.move_to(max(5, width - 25), height / 2 + 3)
+            context.show_text(f"{self.value:.0f}%")
+            return False
+
         context.set_source_rgba(*rgba(self.color, 0.12))
         context.set_line_width(1)
         for fraction in (0.25, 0.5, 0.75):
@@ -369,10 +401,13 @@ class CoreGraph(Gtk.DrawingArea):
                 context.move_to(x, y) if offset == 0 else context.line_to(x, y)
             context.stroke()
         context.select_font_face("Ubuntu", 0, 0)
-        context.set_font_size(8.5)
+        context.set_font_size(7.5 if self.density == "compact" else 8.5)
         context.set_source_rgb(0.75, 0.79, 0.73)
         context.move_to(6, 12)
-        type_text = f" / {self.core_type}-CORE" if self.core_type else ""
+        if self.density == "compact" and self.core_type:
+            type_text = f" / {self.core_type}"
+        else:
+            type_text = f" / {self.core_type}-CORE" if self.core_type else ""
         context.show_text(f"CPU {self.index:02d}{type_text}")
         value_text = f"{self.value:.0f}%"
         context.set_source_rgba(*rgba(self.color, 1.0))
@@ -469,24 +504,28 @@ def collapsible_card(title: str, child: Gtk.Widget, color: str | None = None) ->
     toggle = icon_button("go-up-symbolic", f"Collapse {title}", "collapse-button")
     header.pack_start(label, True, True, 0)
     header.pack_end(toggle, False, False, 0)
-    revealer = Gtk.Revealer()
-    revealer.set_transition_type(Gtk.RevealerTransitionType.SLIDE_UP)
-    revealer.set_transition_duration(160)
-    revealer.set_reveal_child(True)
-    revealer.add(child)
+    section_body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+    section_body.pack_start(child, True, True, 0)
+    container.section_expanded = True
 
     def toggle_section(_button: Gtk.Button) -> None:
-        expanded = revealer.get_reveal_child()
-        revealer.set_reveal_child(not expanded)
+        expanded = container.section_expanded
+        container.section_expanded = not expanded
+        if expanded:
+            section_body.hide()
+        else:
+            section_body.show_all()
         icon = "go-down-symbolic" if expanded else "go-up-symbolic"
         action = "Expand" if expanded else "Collapse"
         toggle.set_image(Gtk.Image.new_from_icon_name(icon, Gtk.IconSize.BUTTON))
         toggle.set_tooltip_text(f"{action} {title}")
+        container.queue_resize()
 
     toggle.connect("clicked", toggle_section)
     container.pack_start(header, False, False, 0)
-    container.pack_start(revealer, True, True, 0)
+    container.pack_start(section_body, True, True, 0)
     container.collapse_button = toggle
+    container.section_body = section_body
     return container
 
 
@@ -766,6 +805,8 @@ class TmogWindow(Gtk.Window):
     def _build_performance_resource(self, name: str, title: str, color: str) -> None:
         content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
         content.set_border_width(1)
+        content.set_vexpand(True)
+        content.set_valign(Gtk.Align.FILL)
         header = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         heading = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
         labels = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=1)
@@ -819,27 +860,25 @@ class TmogWindow(Gtk.Window):
         secondary_graph = None
         composition = None
         if name == "cpu":
-            self.core_flow = Gtk.FlowBox()
-            self.core_flow.set_selection_mode(Gtk.SelectionMode.NONE)
-            self.core_flow.set_homogeneous(True)
-            self.core_flow.set_row_spacing(6)
-            self.core_flow.set_column_spacing(6)
-            self.core_flow.set_min_children_per_line(2)
-            self.core_flow.set_max_children_per_line(8)
-            self.core_flow.set_valign(Gtk.Align.START)
-            self.core_flow.get_style_context().add_class("core-flow")
-            core_scroll = scrollable(self.core_flow)
-            core_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
-            core_scroll.set_overlay_scrolling(False)
-            core_scroll.get_style_context().add_class("stable-scroll")
-            core_scroll.set_size_request(-1, 300)
-            core_scroll.connect("size-allocate", self._on_core_scroll_size_allocate)
-            self.core_scroll = core_scroll
-            self.cpu_logical_section = collapsible_card(
-                "Logical processors / per-core history", core_scroll, "green"
-            )
-            content.pack_start(self.cpu_logical_section, False, True, 0)
+            self.core_grid = Gtk.Grid(column_spacing=CORE_GRID_SPACING, row_spacing=CORE_GRID_SPACING)
+            self.core_grid.set_column_homogeneous(True)
+            self.core_grid.set_row_homogeneous(True)
+            self.core_grid.set_hexpand(True)
+            self.core_grid.set_valign(Gtk.Align.START)
+            self.core_grid.get_style_context().add_class("core-grid")
+            self.core_grid.connect("size-allocate", self._on_core_grid_size_allocate)
             self.core_graphs: list[CoreGraph] = []
+            self._core_graph_types: list[str] = []
+            self._core_grid_density: str | None = None
+            self._core_grid_columns: int | None = None
+            self._pending_core_grid_layout: tuple[str, int] | None = None
+            self._core_grid_layout_source: int | None = None
+            self.cpu_logical_section = collapsible_card(
+                "Logical processors / per-core history", self.core_grid, "green"
+            )
+            self.cpu_overall_section.collapse_button.connect("clicked", self._on_cpu_section_toggled)
+            self.cpu_logical_section.collapse_button.connect("clicked", self._on_cpu_section_toggled)
+            content.pack_start(self.cpu_logical_section, False, True, 0)
         elif name in ("disk", "network"):
             secondary_graph = HistoryGraph("green" if name == "disk" else "yellow", fixed_max=None)
             secondary_graph.set_size_request(520, 110 if name == "network" else 160)
@@ -887,7 +926,9 @@ class TmogWindow(Gtk.Window):
             "thermals": [("hotspot", "CPU / observed hotspot"), ("sensors", "Sensors"), ("state", "Thermal state")],
         }[name]
         details = DetailGrid(detail_keys, columns=5 if name == "network" else 4)
-        content.pack_start(card("Details", details, color), False, False, 0)
+        details_card = card("Details", details, color)
+        details_card.set_vexpand(False)
+        content.pack_start(details_card, False, False, 0)
 
         sensor_flow = None
         if name == "thermals":
@@ -1572,53 +1613,124 @@ class TmogWindow(Gtk.Window):
 
     def _update_core_graphs(self, values: list[float], core_types: list[str]) -> None:
         normalized_types = [core_types[index] if index < len(core_types) else "" for index in range(len(values))]
-        if len(values) != len(self.core_graphs) or normalized_types != getattr(self, "_core_graph_types", []):
-            for child in self.core_flow.get_children():
-                self.core_flow.remove(child)
+        if len(values) != len(self.core_graphs) or normalized_types != self._core_graph_types:
+            if self._core_grid_layout_source is not None:
+                GLib.source_remove(self._core_grid_layout_source)
+                self._core_grid_layout_source = None
+            self._pending_core_grid_layout = None
+            for child in self.core_grid.get_children():
+                self.core_grid.remove(child)
             self.core_graphs = []
             for index, _value in enumerate(values):
                 graph = CoreGraph(index, normalized_types[index])
-                self.core_flow.add(graph)
                 self.core_graphs.append(graph)
             self._core_graph_types = normalized_types
-            self.core_flow.show_all()
+            self._core_grid_density = None
+            self._core_grid_columns = None
+            if not self.core_graphs:
+                self.core_grid.set_size_request(-1, -1)
             self._layout_core_grid()
         for graph, value in zip(self.core_graphs, values):
             graph.add(value)
 
-    def _on_core_scroll_size_allocate(self, _widget: Gtk.Widget, allocation: Gdk.Rectangle) -> None:
+    def _on_core_grid_size_allocate(self, _widget: Gtk.Widget, allocation: Gdk.Rectangle) -> None:
         self._layout_core_grid(allocation.width)
+
+    def _on_cpu_section_toggled(self, _button: Gtk.Button) -> None:
+        GLib.idle_add(self._relayout_core_grid_after_section_toggle)
+
+    def _relayout_core_grid_after_section_toggle(self) -> bool:
+        if self._core_grid_layout_source is not None:
+            GLib.source_remove(self._core_grid_layout_source)
+            self._core_grid_layout_source = None
+        self._pending_core_grid_layout = None
+        self._core_grid_density = None
+        self._core_grid_columns = None
+        self._layout_core_grid()
+        self.core_grid.queue_resize()
+        self.cpu_logical_section.queue_resize()
+        return GLib.SOURCE_REMOVE
 
     def _layout_core_grid(self, available_width: int | None = None) -> None:
         core_count = len(self.core_graphs)
         if not core_count:
             return
-        width = available_width or self.core_scroll.get_allocated_width()
+        width = available_width or self.core_grid.get_allocated_width()
         if width <= 1:
             return
 
-        tile_width = 108
-        tile_height = 70
-        gap = 6
-        capacity = max(1, min(8, core_count, (width + gap) // (tile_width + gap)))
-        row_count = math.ceil(core_count / capacity)
-        aligned_columns = [
-            columns
-            for columns in range(capacity, 0, -1)
-            if math.ceil(core_count / columns) == row_count and core_count % columns == 0
-        ]
-        columns = aligned_columns[0] if aligned_columns else capacity
-        row_count = math.ceil(core_count / columns)
-        content_height = row_count * tile_height + max(0, row_count - 1) * gap + 12
-        desired_height = min(390, max(90, content_height))
+        gap = CORE_GRID_SPACING
+        window_height = self.get_allocated_height()
+        if window_height <= 1:
+            window_height = 720
+        target_height = max(220, min(380, int(window_height * 0.42)))
+        layouts = []
+        if not self.cpu_overall_section.section_expanded:
+            layouts.append(("expanded", *CORE_GRAPH_SIZES["expanded"], 8))
+        layouts.extend((
+            ("full", 108, 70, 8),
+            ("compact", 82, 54, 12),
+            ("numeric", 62, 34, 16),
+        ))
 
-        if columns != getattr(self, "_core_grid_columns", None):
-            self.core_flow.set_min_children_per_line(columns)
-            self.core_flow.set_max_children_per_line(columns)
-            self._core_grid_columns = columns
-        if desired_height != getattr(self, "_core_scroll_height", None):
-            self.core_scroll.set_size_request(-1, desired_height)
-            self._core_scroll_height = desired_height
+        selected_layout = layouts[-1]
+        selected_columns = 1
+        for layout in layouts:
+            density, tile_width, tile_height, max_columns = layout
+            capacity = max(1, min(max_columns, core_count, (width + gap) // (tile_width + gap)))
+            row_count = math.ceil(core_count / capacity)
+            aligned_columns = [
+                columns
+                for columns in range(capacity, 0, -1)
+                if math.ceil(core_count / columns) == row_count and core_count % columns == 0
+            ]
+            columns = aligned_columns[0] if aligned_columns else capacity
+            row_count = math.ceil(core_count / columns)
+            grid_height = (
+                row_count * tile_height
+                + max(0, row_count - 1) * gap
+                + CORE_GRID_BOTTOM_GUARD
+            )
+            selected_layout = layout
+            selected_columns = columns
+            if grid_height <= target_height:
+                break
+
+        layout = (selected_layout[0], selected_columns)
+        if layout == self._pending_core_grid_layout:
+            return
+        if layout == (self._core_grid_density, self._core_grid_columns):
+            return
+        self._pending_core_grid_layout = layout
+        if self._core_grid_layout_source is None:
+            self._core_grid_layout_source = GLib.idle_add(self._apply_core_grid_layout)
+
+    def _apply_core_grid_layout(self) -> bool:
+        pending_layout = self._pending_core_grid_layout
+        self._pending_core_grid_layout = None
+        self._core_grid_layout_source = None
+        if pending_layout is None:
+            return GLib.SOURCE_REMOVE
+        density, columns = pending_layout
+        for child in self.core_grid.get_children():
+            self.core_grid.remove(child)
+        for index, graph in enumerate(self.core_graphs):
+            graph.set_density(density)
+            self.core_grid.attach(graph, index % columns, index // columns, 1, 1)
+        tile_height = CORE_GRAPH_SIZES[density][1]
+        row_count = math.ceil(len(self.core_graphs) / columns)
+        required_height = (
+            row_count * tile_height
+            + max(0, row_count - 1) * self.core_grid.get_row_spacing()
+            + CORE_GRID_BOTTOM_GUARD
+        )
+        self.core_grid.set_size_request(-1, required_height)
+        self._core_grid_density = density
+        self._core_grid_columns = columns
+        self.core_grid.show_all()
+        self.core_grid.queue_resize()
+        self.cpu_logical_section.queue_resize()
+        return GLib.SOURCE_REMOVE
 
     def _update_thermal_sensor_tiles(self, snapshot: SystemSnapshot) -> None:
         sensor_order = [sensor.identifier for sensor in snapshot.thermal_sensors]

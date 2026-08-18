@@ -5,12 +5,5 @@ __pycache__/
 dist/
 build/
 screenshots/*
-!screenshots/summary-beta06.png
-!screenshots/performance-cpu-beta06.png
-!screenshots/performance-cpu-collapsed-beta06.png
-!screenshots/performance-gpu-beta06.png
-!screenshots/performance-network-beta06.png
-!screenshots/performance-energy-beta06.png
-!screenshots/performance-thermals-beta06.png
-!screenshots/processes-tree-beta06.png
+!screenshots/*-latest.png
 *.zip
