@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import os
+import socket
 import sys
 from pathlib import Path
 
@@ -15,6 +16,39 @@ gi.require_version("Gdk", "3.0")
 from gi.repository import GLib, Gtk
 
 from tmog_linux.app import TmogWindow
+
+
+def sanitize_public_capture(window: TmogWindow) -> None:
+    """Replace machine-specific values before publishing documentation images."""
+    current_user = window._current_user
+    for row in window.process_store:
+        if row[2] == current_user:
+            row[2] = "demo"
+        if "capture_ui.py" in row[10]:
+            row[10] = "python3 tools/capture_ui.py screenshots/example.png"
+        elif row[1].strip() == "python3" and "tmog_linux" in row[10]:
+            row[10] = "python3 -m tmog_linux"
+
+    for row in window.user_store:
+        if row[0] == current_user:
+            row[0] = "demo"
+
+    window.perf_widgets["network"]["details"].update({
+        "hardware": "02:00:00:00:00:01",
+        "ipv4": "192.0.2.10",
+        "ipv6": "2001:db8::10",
+    })
+
+    host_name = socket.gethostname()
+
+    def sanitize_label(widget: Gtk.Widget) -> None:
+        if isinstance(widget, Gtk.Label) and widget.get_text() == host_name:
+            widget.set_text("demo-workstation")
+        if isinstance(widget, Gtk.Container):
+            for child in widget.get_children():
+                sanitize_label(child)
+
+    sanitize_label(window)
 
 
 def main() -> int:
@@ -132,6 +166,8 @@ def main() -> int:
         GLib.timeout_add(delay, resample)
     if capture_cpu_count is not None:
         GLib.timeout_add(3200, override_core_count)
+    if os.environ.get("TMOG_CAPTURE_PUBLIC") == "1":
+        GLib.timeout_add(3300, sanitize_public_capture, window)
     GLib.timeout_add_seconds(4, capture)
     Gtk.main()
     return 0
