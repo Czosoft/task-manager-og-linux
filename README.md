@@ -15,7 +15,7 @@
 
 </div>
 
-> **非官方社区项目**  
+> **非官方社区项目**<br>
 > 本项目的视觉与信息架构参考 [Task Manager OG](https://tmog.org/)，代码完全独立实现。它不是 Plummers' Software LLC 发布或认可的 Linux 移植版，也不包含官方应用的源码、商标素材或二进制文件。
 
 <table>

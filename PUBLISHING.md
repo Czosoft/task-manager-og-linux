@@ -284,7 +284,6 @@ chmod 0644 "$HOME/.ssh/id_ed25519_github_publish.pub"
 chmod 0644 "$HOME/.ssh/id_ed25519_aiursoft_publish.pub"
 ```
 
-
 ## 9. 把公钥登记到网站
 
 显示 GitHub 公钥：
