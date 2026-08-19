@@ -16,7 +16,16 @@ gi.require_version("Gdk", "3.0")
 import cairo  # noqa: E402,F401 - registers the PyGObject cairo converter
 from gi.repository import Gdk, Gio, GLib, GObject, Gtk, Pango  # noqa: E402
 
-from .metrics import GpuSnapshot, LinuxMetricsCollector, ProcessInfo, SystemSnapshot, format_bytes, format_duration
+from .metrics import (
+    DiskSnapshot,
+    GpuSnapshot,
+    LinuxMetricsCollector,
+    NetworkInterfaceSnapshot,
+    ProcessInfo,
+    SystemSnapshot,
+    format_bytes,
+    format_duration,
+)
 
 
 COLORS = {
@@ -979,6 +988,10 @@ class TmogWindow(Gtk.Window):
         self._summary_default_fit_passes = 0
         self.nav_buttons: dict[str, Gtk.ToggleButton] = {}
         self.process_cpu_bars_enabled = True
+        self._io_histories: dict[
+            str,
+            dict[str, tuple[deque[float], deque[float], deque[float]]],
+        ] = {"disk": {}, "network": {}}
         self.theme_preference = load_theme_preference()
         self.cpu_section_preferences = load_cpu_section_preferences()
         self._cpu_section_persistence_enabled = True
@@ -1352,10 +1365,19 @@ class TmogWindow(Gtk.Window):
         header.pack_start(heading, False, False, 0)
         header.pack_start(meter_row, False, False, 0)
         device_combo = None
-        if name == "gpu":
+        if name in ("gpu", "disk", "network"):
             device_combo = Gtk.ComboBoxText()
-            device_combo.set_tooltip_text("Select graphics adapter")
-            device_combo.connect("changed", self._gpu_selection_changed)
+            device_combo.set_tooltip_text(
+                {
+                    "gpu": "Select graphics adapter",
+                    "disk": "Select a physical disk or combined view",
+                    "network": "Select a network interface or combined view",
+                }[name]
+            )
+            if name == "gpu":
+                device_combo.connect("changed", self._gpu_selection_changed)
+            else:
+                device_combo.connect("changed", lambda combo, resource=name: self._io_selection_changed(combo, resource))
             header.pack_start(device_combo, False, False, 0)
         content.pack_start(header, False, False, 4)
 
@@ -1441,10 +1463,14 @@ class TmogWindow(Gtk.Window):
                 ("power", "Power draw"), ("fan", "Fan speed"),
             ],
             "npu": [("provider", "Provider"), ("state", "State")],
-            "disk": [("devices", "Physical disks"), ("active", "Active time"), ("read", "Read speed"), ("write", "Write speed"),
-                    ("read_total", "Read total"), ("write_total", "Write total"), ("capacity", "Capacity"), ("used", "Used"), ("free", "Free")],
+            "disk": [
+                ("selection", "Selection"), ("type", "Device type"), ("devices", "Physical disks"),
+                ("active", "Active time"), ("read", "Read speed"), ("write", "Write speed"),
+                ("read_total", "Read total"), ("write_total", "Write total"),
+                ("capacity", "Raw capacity"), ("used", "Mounted used"), ("free", "Mounted free"),
+            ],
             "network": [
-                ("interface", "Primary interface"), ("type", "Connection type"), ("state", "Link state"),
+                ("interface", "Selected interface"), ("type", "Connection type"), ("state", "Link state"),
                 ("link", "Link speed"), ("receive", "Receive"), ("send", "Send"),
                 ("received_total", "Received total"), ("sent_total", "Sent total"),
                 ("hardware", "Hardware address"), ("ipv4", "IPv4 address"), ("ipv6", "IPv6 address"),
@@ -1941,6 +1967,7 @@ class TmogWindow(Gtk.Window):
             self.top_store.append((process.pid, process.name, round(process.cpu_percent, 1), format_bytes(process.memory_bytes)))
 
     def _update_performance(self, snapshot: SystemSnapshot, memory_percent: float) -> None:
+        self._record_io_histories(snapshot)
         disk_rate = snapshot.disk_read_bps + snapshot.disk_write_bps
         network_rate = snapshot.network_receive_bps + snapshot.network_send_bps
         gpu_usages = [gpu.utilization for gpu in snapshot.gpus if gpu.utilization is not None]
@@ -2046,45 +2073,8 @@ class TmogWindow(Gtk.Window):
             "state": "Detected; utilization unavailable" if snapshot.npu_name else "No provider detected",
         })
 
-        disk = self.perf_widgets["disk"]
-        disk["value"].set_text(f"{snapshot.disk_busy_percent:.1f}%")
-        disk["subtitle"].set_text(f"{snapshot.disk_device_count} physical devices / combined")
-        disk["meter"].set_value(snapshot.disk_busy_percent)
-        disk["graph"].add(snapshot.disk_busy_percent)
-        disk["secondary_graph"].add(snapshot.disk_read_bps, snapshot.disk_write_bps)
-        disk["details"].update({
-            "devices": str(snapshot.disk_device_count),
-            "active": f"{snapshot.disk_busy_percent:.1f}%",
-            "read": format_bytes(snapshot.disk_read_bps, rate=True),
-            "write": format_bytes(snapshot.disk_write_bps, rate=True),
-            "read_total": format_bytes(snapshot.disk_read_total),
-            "write_total": format_bytes(snapshot.disk_write_total),
-            "capacity": format_bytes(snapshot.disk_capacity),
-            "used": format_bytes(snapshot.disk_used),
-            "free": format_bytes(snapshot.disk_free),
-        })
-
-        network = self.perf_widgets["network"]
-        network["value"].set_text(format_bytes(network_rate, rate=True))
-        network["subtitle"].set_text(snapshot.primary_interface)
-        network["meter"].set_value(self._network_utilization(snapshot, network_rate, network["graph"]))
-        network["graph"].add(network_rate)
-        network["secondary_graph"].add(snapshot.network_receive_bps, snapshot.network_send_bps)
-        network["details"].update({
-            "interface": snapshot.primary_interface,
-            "interfaces": str(snapshot.network_interface_count),
-            "type": snapshot.network_connection_type,
-            "state": snapshot.network_state,
-            "link": f"{snapshot.link_speed_mbps:,} Mbps" if snapshot.link_speed_mbps else "N/A",
-            "receive": format_bytes(snapshot.network_receive_bps, rate=True),
-            "send": format_bytes(snapshot.network_send_bps, rate=True),
-            "received_total": format_bytes(snapshot.network_receive_total),
-            "sent_total": format_bytes(snapshot.network_send_total),
-            "hardware": snapshot.network_hardware_address,
-            "ipv4": snapshot.network_ipv4_addresses,
-            "ipv6": snapshot.network_ipv6_addresses,
-            "mtu": f"{snapshot.network_mtu:,} bytes" if snapshot.network_mtu is not None else "N/A",
-        })
+        self._update_disk_performance(snapshot)
+        self._update_network_performance(snapshot)
 
         energy = self.perf_widgets["energy"]
         energy["value"].set_text(power_text)
@@ -2139,6 +2129,224 @@ class TmogWindow(Gtk.Window):
         })
         self._update_thermal_sensor_tiles(snapshot)
         self._update_core_graphs(snapshot.per_cpu_percent, snapshot.cpu_core_types)
+
+    def _record_io_histories(self, snapshot: SystemSnapshot) -> None:
+        def append(resource: str, identifier: str, primary: float, first: float, second: float) -> None:
+            history = self._io_histories[resource].setdefault(
+                identifier,
+                (deque(maxlen=60), deque(maxlen=60), deque(maxlen=60)),
+            )
+            history[0].append(max(0.0, primary))
+            history[1].append(max(0.0, first))
+            history[2].append(max(0.0, second))
+
+        append(
+            "disk",
+            "combined",
+            snapshot.disk_busy_percent,
+            snapshot.disk_read_bps,
+            snapshot.disk_write_bps,
+        )
+        for disk in snapshot.disks:
+            append("disk", disk.identifier, disk.busy_percent, disk.read_bps, disk.write_bps)
+
+        append(
+            "network",
+            "combined",
+            snapshot.network_receive_bps + snapshot.network_send_bps,
+            snapshot.network_receive_bps,
+            snapshot.network_send_bps,
+        )
+        for interface in snapshot.network_interfaces:
+            append(
+                "network",
+                interface.identifier,
+                interface.receive_bps + interface.send_bps,
+                interface.receive_bps,
+                interface.send_bps,
+            )
+
+    def _sync_io_combo(
+        self,
+        resource: str,
+        options: list[tuple[str, str]],
+        default_identifier: str,
+    ) -> str:
+        widgets = self.perf_widgets[resource]
+        combo = widgets["device_combo"]
+        identifiers = [identifier for identifier, _label in options]
+        cache_name = f"_{resource}_combo_identifiers"
+        updating_name = f"_updating_{resource}_combo"
+        if identifiers != getattr(self, cache_name, []):
+            selected = combo.get_active_id()
+            setattr(self, updating_name, True)
+            combo.remove_all()
+            for identifier, label in options:
+                combo.append(identifier, label)
+            target = selected if selected in identifiers else default_identifier
+            if target not in identifiers and identifiers:
+                target = identifiers[0]
+            if identifiers:
+                combo.set_active_id(target)
+            setattr(self, updating_name, False)
+            setattr(self, cache_name, identifiers)
+        combo.set_sensitive(len(options) > 1)
+        return combo.get_active_id() or default_identifier
+
+    def _apply_io_history(self, resource: str, identifier: str) -> None:
+        history = self._io_histories[resource].get(identifier)
+        if history is None:
+            history = (deque(maxlen=60), deque(maxlen=60), deque(maxlen=60))
+        widgets = self.perf_widgets[resource]
+        graph = widgets["graph"]
+        graph.primary = history[0]
+        graph.secondary.clear()
+        graph.queue_draw()
+        secondary = widgets["secondary_graph"]
+        secondary.primary = history[1]
+        secondary.secondary = history[2]
+        secondary.queue_draw()
+
+    def _io_selection_changed(self, _combo: Gtk.ComboBoxText, resource: str) -> None:
+        if getattr(self, f"_updating_{resource}_combo", False) or not self.snapshot:
+            return
+        if resource == "disk":
+            self._update_disk_performance(self.snapshot)
+        else:
+            self._update_network_performance(self.snapshot)
+
+    def _update_disk_performance(self, snapshot: SystemSnapshot) -> None:
+        widgets = self.perf_widgets["disk"]
+        options = [("combined", f"All physical disks  /  {len(snapshot.disks)} devices")]
+        options.extend(
+            (
+                disk.identifier,
+                f"/dev/{disk.identifier}  /  {disk.model}  /  {disk.device_type}",
+            )
+            for disk in snapshot.disks
+        )
+        selected_id = self._sync_io_combo("disk", options, "combined")
+        selected = next((disk for disk in snapshot.disks if disk.identifier == selected_id), None)
+        if selected is None:
+            busy = snapshot.disk_busy_percent
+            read_bps = snapshot.disk_read_bps
+            write_bps = snapshot.disk_write_bps
+            read_total = snapshot.disk_read_total
+            write_total = snapshot.disk_write_total
+            capacity = snapshot.disk_capacity
+            used: int | None = snapshot.disk_used
+            free: int | None = snapshot.disk_free
+            selection = "All physical disks"
+            device_type = "Combined"
+            subtitle = f"{snapshot.disk_device_count} physical devices / combined"
+            selected_id = "combined"
+        else:
+            busy = selected.busy_percent
+            read_bps = selected.read_bps
+            write_bps = selected.write_bps
+            read_total = selected.read_total
+            write_total = selected.write_total
+            capacity = selected.capacity
+            used = selected.used
+            free = selected.free
+            selection = f"/dev/{selected.identifier}  /  {selected.model}"
+            device_type = selected.device_type
+            subtitle = f"{selected.model}  •  {selected.device_type}  •  {format_bytes(selected.capacity)}"
+
+        widgets["value"].set_text(f"{busy:.1f}%")
+        widgets["subtitle"].set_text(subtitle)
+        widgets["meter"].set_value(busy)
+        self._apply_io_history("disk", selected_id)
+        widgets["details"].update({
+            "selection": selection,
+            "type": device_type,
+            "devices": str(snapshot.disk_device_count),
+            "active": f"{busy:.1f}%",
+            "read": format_bytes(read_bps, rate=True),
+            "write": format_bytes(write_bps, rate=True),
+            "read_total": format_bytes(read_total),
+            "write_total": format_bytes(write_total),
+            "capacity": format_bytes(capacity),
+            "used": format_bytes(used) if used is not None else "N/A",
+            "free": format_bytes(free) if free is not None else "N/A",
+        })
+
+    def _update_network_performance(self, snapshot: SystemSnapshot) -> None:
+        widgets = self.perf_widgets["network"]
+        options = [("combined", f"All interfaces  /  {len(snapshot.network_interfaces)} detected")]
+        options.extend(
+            (
+                interface.identifier,
+                f"{interface.identifier}  /  {interface.connection_type}  /  {interface.state}",
+            )
+            for interface in snapshot.network_interfaces
+        )
+        default_id = next(
+            (interface.identifier for interface in snapshot.network_interfaces if interface.primary),
+            "combined",
+        )
+        selected_id = self._sync_io_combo("network", options, default_id)
+        selected = next(
+            (interface for interface in snapshot.network_interfaces if interface.identifier == selected_id),
+            None,
+        )
+        if selected is None:
+            receive_bps = snapshot.network_receive_bps
+            send_bps = snapshot.network_send_bps
+            receive_total = snapshot.network_receive_total
+            send_total = snapshot.network_send_total
+            link_speed = None
+            interface_name = "All interfaces"
+            connection_type = "Combined"
+            active_count = sum(
+                interface.state in ("Up", "Unknown") for interface in snapshot.network_interfaces
+            )
+            state = f"{active_count} active / {snapshot.network_interface_count} detected"
+            hardware = ipv4 = ipv6 = "Multiple / select an interface"
+            mtu = None
+            subtitle = f"{snapshot.network_interface_count} interfaces / combined"
+            selected_id = "combined"
+        else:
+            receive_bps = selected.receive_bps
+            send_bps = selected.send_bps
+            receive_total = selected.receive_total
+            send_total = selected.send_total
+            link_speed = selected.link_speed_mbps
+            interface_name = selected.identifier
+            connection_type = selected.connection_type
+            state = selected.state
+            hardware = selected.hardware_address
+            ipv4 = selected.ipv4_addresses
+            ipv6 = selected.ipv6_addresses
+            mtu = selected.mtu
+            primary_text = "  •  default route" if selected.primary else ""
+            subtitle = f"{selected.identifier}  •  {selected.connection_type}{primary_text}"
+
+        rate = receive_bps + send_bps
+        widgets["value"].set_text(format_bytes(rate, rate=True))
+        widgets["subtitle"].set_text(subtitle)
+        self._apply_io_history("network", selected_id)
+        if link_speed:
+            capacity = link_speed * 1_000_000.0 / 8.0
+            meter_value = min(100.0, 100.0 * rate / capacity)
+        else:
+            meter_value = self._adaptive_meter(rate, widgets["graph"])
+        widgets["meter"].set_value(meter_value)
+        widgets["details"].update({
+            "interface": interface_name,
+            "interfaces": str(snapshot.network_interface_count),
+            "type": connection_type,
+            "state": state,
+            "link": f"{link_speed:,} Mbps" if link_speed else "N/A / per interface",
+            "receive": format_bytes(receive_bps, rate=True),
+            "send": format_bytes(send_bps, rate=True),
+            "received_total": format_bytes(receive_total),
+            "sent_total": format_bytes(send_total),
+            "hardware": hardware,
+            "ipv4": ipv4,
+            "ipv6": ipv6,
+            "mtu": f"{mtu:,} bytes" if mtu is not None else "N/A",
+        })
 
     def _gpu_selection_changed(self, _combo: Gtk.ComboBoxText) -> None:
         if getattr(self, "_updating_gpu_combo", False) or not self.snapshot:

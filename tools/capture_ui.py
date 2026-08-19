@@ -278,12 +278,41 @@ def main() -> int:
             window.startup_view.get_selection().select_iter(first)
         return GLib.SOURCE_REMOVE
 
+    def select_io_resource() -> bool:
+        selection = os.environ.get("TMOG_CAPTURE_IO_SELECTION")
+        if not selection or window.stack.get_visible_child_name() != "performance":
+            return GLib.SOURCE_REMOVE
+        resource_name = window.performance_stack.get_visible_child_name()
+        if resource_name not in ("disk", "network"):
+            raise RuntimeError("I/O selection capture requires the Disk or Network page")
+        identifiers = getattr(window, f"_{resource_name}_combo_identifiers", [])
+        if selection == "first-device":
+            selection = next((identifier for identifier in identifiers if identifier != "combined"), None)
+        elif selection == "largest-device":
+            if resource_name != "disk" or window.snapshot is None:
+                raise RuntimeError("Largest-device selection requires a populated Disk page")
+            largest_disk = max(window.snapshot.disks, key=lambda disk: disk.capacity, default=None)
+            selection = largest_disk.identifier if largest_disk is not None else None
+        if selection not in identifiers:
+            raise RuntimeError(f"I/O selection {selection!r} is unavailable: {identifiers}")
+        combo = window.perf_widgets[resource_name]["device_combo"]
+        combo.set_active_id(selection)
+        history = window._io_histories[resource_name].get(selection)
+        if history is None or window.perf_widgets[resource_name]["graph"].primary is not history[0]:
+            raise RuntimeError("Selected I/O resource did not restore its independent history")
+        print(
+            f"io-selection: resource={resource_name}, selected={selection}, "
+            f"samples={len(history[0])}, options={len(identifiers)}"
+        )
+        return GLib.SOURCE_REMOVE
+
     for delay in (800, 1700, 2600):
         GLib.timeout_add(delay, resample)
     if capture_cpu_count is not None:
         GLib.timeout_add(3200, override_core_count)
     GLib.timeout_add(3100, exercise_process_interactions)
     GLib.timeout_add(3200, prepare_startup_capture)
+    GLib.timeout_add(3250, select_io_resource)
     if os.environ.get("TMOG_CAPTURE_PUBLIC") == "1":
         GLib.timeout_add(3300, sanitize_public_capture, window)
     GLib.timeout_add(3500, open_process_details)

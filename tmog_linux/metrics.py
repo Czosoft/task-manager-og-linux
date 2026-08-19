@@ -69,6 +69,38 @@ class GpuSnapshot:
 
 
 @dataclass(slots=True)
+class DiskSnapshot:
+    identifier: str
+    model: str
+    device_type: str
+    busy_percent: float
+    read_bps: float
+    write_bps: float
+    read_total: int
+    write_total: int
+    capacity: int
+    used: int | None = None
+    free: int | None = None
+
+
+@dataclass(slots=True)
+class NetworkInterfaceSnapshot:
+    identifier: str
+    connection_type: str
+    state: str
+    link_speed_mbps: int | None
+    receive_bps: float
+    send_bps: float
+    receive_total: int
+    send_total: int
+    hardware_address: str
+    ipv4_addresses: str
+    ipv6_addresses: str
+    mtu: int | None
+    primary: bool = False
+
+
+@dataclass(slots=True)
 class ThermalSensor:
     identifier: str
     label: str
@@ -112,6 +144,7 @@ class SystemSnapshot:
     disk_capacity: int
     disk_used: int
     disk_free: int
+    disks: list[DiskSnapshot]
     network_receive_bps: float
     network_send_bps: float
     network_receive_total: int
@@ -125,6 +158,7 @@ class SystemSnapshot:
     network_ipv6_addresses: str
     network_mtu: int | None
     network_state: str
+    network_interfaces: list[NetworkInterfaceSnapshot]
     temperature_c: float | None
     thermal_sensor_count: int
     thermal_sensors: list[ThermalSensor]
@@ -240,30 +274,45 @@ def parse_meminfo(text: str) -> dict[str, int]:
     return values
 
 
-def parse_diskstats(text: str, devices: set[str]) -> tuple[int, int, int]:
-    read_sectors = write_sectors = io_ms = 0
+def parse_diskstats_by_device(text: str, devices: set[str]) -> dict[str, tuple[int, int, int]]:
+    values: dict[str, tuple[int, int, int]] = {}
     for line in text.splitlines():
         parts = line.split()
         if len(parts) < 14 or parts[2] not in devices:
             continue
-        read_sectors += int(parts[5])
-        write_sectors += int(parts[9])
-        io_ms += int(parts[12])
-    return read_sectors * 512, write_sectors * 512, io_ms
+        values[parts[2]] = (int(parts[5]) * 512, int(parts[9]) * 512, int(parts[12]))
+    return values
 
 
-def parse_netdev(text: str) -> tuple[int, int]:
-    received = sent = 0
+def parse_diskstats(text: str, devices: set[str]) -> tuple[int, int, int]:
+    read_sectors = write_sectors = io_ms = 0
+    for read_bytes, write_bytes, device_io_ms in parse_diskstats_by_device(text, devices).values():
+        read_sectors += read_bytes
+        write_sectors += write_bytes
+        io_ms += device_io_ms
+    return read_sectors, write_sectors, io_ms
+
+
+def parse_netdev_interfaces(text: str) -> dict[str, tuple[int, int]]:
+    interfaces: dict[str, tuple[int, int]] = {}
     for line in text.splitlines()[2:]:
         if ":" not in line:
             continue
         interface, values = line.split(":", 1)
-        if interface.strip() == "lo":
+        name = interface.strip()
+        if name == "lo":
             continue
         fields = values.split()
         if len(fields) >= 9:
-            received += int(fields[0])
-            sent += int(fields[8])
+            interfaces[name] = (int(fields[0]), int(fields[8]))
+    return interfaces
+
+
+def parse_netdev(text: str) -> tuple[int, int]:
+    received = sent = 0
+    for interface_received, interface_sent in parse_netdev_interfaces(text).values():
+        received += interface_received
+        sent += interface_sent
     return received, sent
 
 
@@ -391,8 +440,8 @@ class LinuxMetricsCollector:
         self.page_size = os.sysconf("SC_PAGE_SIZE")
         self.cpu_count = max(1, os.cpu_count() or 1)
         self._previous_cpu: dict[str, tuple[int, ...]] = {}
-        self._previous_disk: tuple[int, int, int] | None = None
-        self._previous_net: tuple[int, int] | None = None
+        self._previous_disks: dict[str, tuple[int, int, int]] = {}
+        self._previous_networks: dict[str, tuple[int, int]] = {}
         self._previous_process_ticks: dict[int, int] = {}
         self._previous_gpu_counters: dict[tuple[str, str], int] = {}
         self._previous_rapl_energy: dict[str, int] = {}
@@ -887,6 +936,150 @@ class LinuxMetricsCollector:
         except OSError:
             return 0, 0, 0
 
+    def _read_disk_identity(self, device: str) -> tuple[str, str, int]:
+        path = self.sys_root / "block" / device
+        try:
+            model = (path / "device/model").read_text(encoding="utf-8", errors="replace").strip()
+        except OSError:
+            model = ""
+        model = re.sub(r"\s+", " ", model) or f"/dev/{device}"
+
+        try:
+            capacity = int((path / "size").read_text().strip()) * 512
+        except (OSError, ValueError):
+            capacity = 0
+
+        try:
+            rotational = int((path / "queue/rotational").read_text().strip())
+        except (OSError, ValueError):
+            rotational = -1
+        try:
+            virtual = "virtual" in path.resolve().parts
+        except OSError:
+            virtual = False
+
+        if device.startswith("nvme"):
+            device_type = "NVMe"
+        elif device.startswith("mmcblk"):
+            device_type = "eMMC / SD"
+        elif virtual:
+            device_type = "Virtual disk"
+        elif rotational == 1:
+            device_type = "HDD"
+        elif rotational == 0:
+            device_type = "SSD"
+        else:
+            device_type = "Block device"
+        return model, device_type, capacity
+
+    def _read_disk_snapshots(
+        self,
+        counters: dict[str, tuple[int, int, int]],
+        elapsed: float,
+    ) -> list[DiskSnapshot]:
+        previous_counters = getattr(self, "_previous_disks", {})
+        snapshots: list[DiskSnapshot] = []
+        for device in sorted(self._physical_devices):
+            read_total, write_total, io_ms = counters.get(device, (0, 0, 0))
+            previous = previous_counters.get(device)
+            if previous is None:
+                read_bps = write_bps = busy_percent = 0.0
+            else:
+                read_bps = max(0, read_total - previous[0]) / elapsed
+                write_bps = max(0, write_total - previous[1]) / elapsed
+                busy_percent = min(100.0, 100.0 * max(0, io_ms - previous[2]) / (elapsed * 1000.0))
+            model, device_type, capacity = self._read_disk_identity(device)
+            snapshots.append(
+                DiskSnapshot(
+                    identifier=device,
+                    model=model,
+                    device_type=device_type,
+                    busy_percent=busy_percent,
+                    read_bps=read_bps,
+                    write_bps=write_bps,
+                    read_total=read_total,
+                    write_total=write_total,
+                    capacity=capacity,
+                )
+            )
+        self._previous_disks = counters
+        return snapshots
+
+    def _read_network_speed(self, interface: str) -> int | None:
+        try:
+            speed = int((self.sys_root / "class/net" / interface / "speed").read_text().strip())
+            return speed if speed > 0 else None
+        except (OSError, ValueError):
+            return None
+
+    def _read_network_snapshots(
+        self,
+        counters: dict[str, tuple[int, int]],
+        elapsed: float,
+    ) -> list[NetworkInterfaceSnapshot]:
+        previous_counters = getattr(self, "_previous_networks", {})
+        default_interface = parse_default_route_interface(self._read("net/route"))
+        try:
+            sysfs_names = {
+                path.name for path in (self.sys_root / "class/net").iterdir() if path.name != "lo"
+            }
+        except OSError:
+            sysfs_names = set()
+        interface_names = sysfs_names | set(counters)
+        snapshots: list[NetworkInterfaceSnapshot] = []
+        for interface in interface_names:
+            receive_total, send_total = counters.get(interface, (0, 0))
+            previous = previous_counters.get(interface)
+            if previous is None:
+                receive_bps = send_bps = 0.0
+            else:
+                receive_bps = max(0, receive_total - previous[0]) / elapsed
+                send_bps = max(0, send_total - previous[1]) / elapsed
+            (
+                connection_type,
+                hardware_address,
+                ipv4_addresses,
+                ipv6_addresses,
+                mtu,
+                state,
+            ) = self._read_network_identity(interface)
+            snapshots.append(
+                NetworkInterfaceSnapshot(
+                    identifier=interface,
+                    connection_type=connection_type,
+                    state=state,
+                    link_speed_mbps=self._read_network_speed(interface),
+                    receive_bps=receive_bps,
+                    send_bps=send_bps,
+                    receive_total=receive_total,
+                    send_total=send_total,
+                    hardware_address=hardware_address,
+                    ipv4_addresses=ipv4_addresses,
+                    ipv6_addresses=ipv6_addresses,
+                    mtu=mtu,
+                    primary=interface == default_interface,
+                )
+            )
+
+        active_states = {"Up", "Unknown"}
+        type_order = {"Ethernet": 0, "Wi-Fi": 1, "Bridge": 2, "Tunnel": 3, "Virtual Ethernet": 4}
+        snapshots.sort(
+            key=lambda item: (
+                not item.primary,
+                item.state not in active_states,
+                type_order.get(item.connection_type, 5),
+                item.identifier,
+            )
+        )
+        if snapshots and not any(item.primary and item.state in active_states for item in snapshots):
+            for item in snapshots:
+                item.primary = False
+            primary = next((item for item in snapshots if item.state in active_states), snapshots[0])
+            primary.primary = True
+            snapshots.sort(key=lambda item: (not item.primary, item.identifier))
+        self._previous_networks = counters
+        return snapshots
+
     def _read_network_details(self) -> tuple[int, str, int | None]:
         interfaces: list[Path] = []
         net_root = self.sys_root / "class/net"
@@ -1100,33 +1293,38 @@ class LinuxMetricsCollector:
         swap_total = memory.get("SwapTotal", 0)
         swap_used = max(0, swap_total - memory.get("SwapFree", 0))
 
-        disk = parse_diskstats(self._read("diskstats"), self._physical_devices)
-        if self._previous_disk is None:
-            disk_read = disk_write = disk_busy = 0.0
-        else:
-            disk_read = max(0, disk[0] - self._previous_disk[0]) / elapsed
-            disk_write = max(0, disk[1] - self._previous_disk[1]) / elapsed
-            denominator = elapsed * 1000.0 * max(1, len(self._physical_devices))
-            disk_busy = min(100.0, 100.0 * max(0, disk[2] - self._previous_disk[2]) / denominator)
-        self._previous_disk = disk
-        disk_capacity, disk_used, disk_free = self._read_disk_space()
+        self._physical_devices = self._find_physical_devices()
+        disk_counters = parse_diskstats_by_device(self._read("diskstats"), self._physical_devices)
+        disks = self._read_disk_snapshots(disk_counters, elapsed)
+        disk = (
+            sum(item.read_total for item in disks),
+            sum(item.write_total for item in disks),
+            sum(disk_counters.get(item.identifier, (0, 0, 0))[2] for item in disks),
+        )
+        disk_read = sum(item.read_bps for item in disks)
+        disk_write = sum(item.write_bps for item in disks)
+        disk_busy = sum(item.busy_percent for item in disks) / len(disks) if disks else 0.0
+        root_capacity, disk_used, disk_free = self._read_disk_space()
+        disk_capacity = sum(item.capacity for item in disks) or root_capacity
 
-        network = parse_netdev(self._read("net/dev"))
-        if self._previous_net is None:
-            network_receive = network_send = 0.0
-        else:
-            network_receive = max(0, network[0] - self._previous_net[0]) / elapsed
-            network_send = max(0, network[1] - self._previous_net[1]) / elapsed
-        self._previous_net = network
-        interface_count, primary_interface, link_speed = self._read_network_details()
-        (
-            network_connection_type,
-            network_hardware_address,
-            network_ipv4_addresses,
-            network_ipv6_addresses,
-            network_mtu,
-            network_state,
-        ) = self._read_network_identity(primary_interface)
+        network_counters = parse_netdev_interfaces(self._read("net/dev"))
+        network_interfaces = self._read_network_snapshots(network_counters, elapsed)
+        network = (
+            sum(item.receive_total for item in network_interfaces),
+            sum(item.send_total for item in network_interfaces),
+        )
+        network_receive = sum(item.receive_bps for item in network_interfaces)
+        network_send = sum(item.send_bps for item in network_interfaces)
+        primary_network = next((item for item in network_interfaces if item.primary), None)
+        interface_count = len(network_interfaces)
+        primary_interface = primary_network.identifier if primary_network else "No active interface"
+        link_speed = primary_network.link_speed_mbps if primary_network else None
+        network_connection_type = primary_network.connection_type if primary_network else "N/A"
+        network_hardware_address = primary_network.hardware_address if primary_network else "N/A"
+        network_ipv4_addresses = primary_network.ipv4_addresses if primary_network else "N/A"
+        network_ipv6_addresses = primary_network.ipv6_addresses if primary_network else "N/A"
+        network_mtu = primary_network.mtu if primary_network else None
+        network_state = primary_network.state if primary_network else "Unavailable"
 
         processes = self._read_processes(elapsed)
         try:
@@ -1224,6 +1422,7 @@ class LinuxMetricsCollector:
             disk_capacity=disk_capacity,
             disk_used=disk_used,
             disk_free=disk_free,
+            disks=disks,
             network_receive_bps=network_receive,
             network_send_bps=network_send,
             network_receive_total=network[0],
@@ -1237,6 +1436,7 @@ class LinuxMetricsCollector:
             network_ipv6_addresses=network_ipv6_addresses,
             network_mtu=network_mtu,
             network_state=network_state,
+            network_interfaces=network_interfaces,
             temperature_c=temperature,
             thermal_sensor_count=thermal_sensor_count,
             thermal_sensors=thermal_sensors,

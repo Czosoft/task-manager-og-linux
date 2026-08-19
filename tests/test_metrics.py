@@ -11,10 +11,12 @@ from tmog_linux.metrics import (
     format_bytes,
     parse_cpu_stat,
     parse_diskstats,
+    parse_diskstats_by_device,
     parse_default_route_interface,
     parse_drm_fdinfo,
     parse_meminfo,
     parse_netdev,
+    parse_netdev_interfaces,
     parse_nvidia_smi_csv,
     parse_pci_device_name,
     parse_process_stat,
@@ -37,10 +39,74 @@ class ParserTests(unittest.TestCase):
     def test_diskstats_filters_devices(self):
         text = "8 0 sda 1 0 10 0 2 0 20 0 0 30 0\n7 0 loop0 1 0 99 0 2 0 99 0 0 99 0\n"
         self.assertEqual(parse_diskstats(text, {"sda"}), (5120, 10240, 30))
+        self.assertEqual(parse_diskstats_by_device(text, {"sda"}), {"sda": (5120, 10240, 30)})
 
     def test_netdev_excludes_loopback(self):
         text = "Inter-| Receive | Transmit\n face |bytes |bytes\n lo: 100 0 0 0 0 0 0 0 200 0\n eth0: 300 0 0 0 0 0 0 0 400 0\n"
         self.assertEqual(parse_netdev(text), (300, 400))
+        self.assertEqual(parse_netdev_interfaces(text), {"eth0": (300, 400)})
+
+    def test_per_disk_snapshots_keep_independent_rates_and_identity(self):
+        with TemporaryDirectory() as directory:
+            sys_root = Path(directory)
+            disk = sys_root / "block/nvme0n1"
+            (disk / "device").mkdir(parents=True)
+            (disk / "queue").mkdir()
+            (disk / "device/model").write_text("Demo NVMe\n")
+            (disk / "size").write_text("2000\n")
+            (disk / "queue/rotational").write_text("0\n")
+            collector = object.__new__(LinuxMetricsCollector)
+            collector.sys_root = sys_root
+            collector._physical_devices = {"nvme0n1"}
+            collector._previous_disks = {"nvme0n1": (1000, 2000, 10)}
+
+            snapshots = collector._read_disk_snapshots({"nvme0n1": (5000, 8000, 260)}, 0.5)
+
+            self.assertEqual(len(snapshots), 1)
+            snapshot = snapshots[0]
+            self.assertEqual(snapshot.model, "Demo NVMe")
+            self.assertEqual(snapshot.device_type, "NVMe")
+            self.assertEqual(snapshot.capacity, 2000 * 512)
+            self.assertEqual(snapshot.read_bps, 8000.0)
+            self.assertEqual(snapshot.write_bps, 12000.0)
+            self.assertEqual(snapshot.busy_percent, 50.0)
+
+    def test_per_interface_snapshots_prefer_default_route_and_keep_rates(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            sys_root = root / "sys"
+            proc_root = root / "proc"
+            for name, state, speed in (("eno1", "up", "1000"), ("wlan0", "down", "300")):
+                interface = sys_root / "class/net" / name
+                (interface / "device").mkdir(parents=True)
+                (interface / "address").write_text(f"00:11:22:33:44:{'55' if name == 'eno1' else '66'}")
+                (interface / "mtu").write_text("1500")
+                (interface / "operstate").write_text(state)
+                (interface / "speed").write_text(speed)
+            (sys_root / "class/net/wlan0/wireless").mkdir()
+            (proc_root / "net").mkdir(parents=True)
+            (proc_root / "net/route").write_text(
+                "Iface Destination Gateway Flags RefCnt Use Metric Mask\n"
+                "eno1 00000000 0100000A 0003 0 0 10 00000000\n"
+            )
+            (proc_root / "net/if_inet6").write_text("")
+            collector = object.__new__(LinuxMetricsCollector)
+            collector.sys_root = sys_root
+            collector.proc_root = proc_root
+            collector._previous_networks = {"eno1": (1000, 2000), "wlan0": (3000, 4000)}
+
+            snapshots = collector._read_network_snapshots(
+                {"eno1": (5000, 8000), "wlan0": (3500, 4500)},
+                0.5,
+            )
+
+            self.assertEqual([item.identifier for item in snapshots], ["eno1", "wlan0"])
+            self.assertTrue(snapshots[0].primary)
+            self.assertEqual(snapshots[0].connection_type, "Ethernet")
+            self.assertEqual(snapshots[0].link_speed_mbps, 1000)
+            self.assertEqual(snapshots[0].receive_bps, 8000.0)
+            self.assertEqual(snapshots[0].send_bps, 12000.0)
+            self.assertEqual(snapshots[1].connection_type, "Wi-Fi")
 
     def test_default_route_prefers_lowest_metric(self):
         text = (

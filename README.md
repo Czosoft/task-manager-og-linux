@@ -117,7 +117,8 @@ Linux 目前没有覆盖所有 NPU 的统一利用率接口。页面会区分“
 
 - Active time 汇总物理块设备忙碌百分比。
 - 第二张图分别保留读取和写入吞吐历史，便于区分读写峰值。
-- Details 显示物理磁盘数量、当前速度、累计读写量以及容量、已用和可用空间。
+- 设备选择器可以在 `All physical disks` 与每块磁盘之间切换；每块盘都有独立的 60 秒活动率和读写历史。
+- Details 显示设备节点、型号、介质类型、当前速度、累计读写量与原始容量；汇总视图另外显示根文件系统的 Mounted used/free。
 - 采集会排除 loop、ram 和 zram，避免把镜像挂载或内存块设备计入物理磁盘。
 
 ### 7. Network 网络
@@ -125,6 +126,8 @@ Linux 目前没有覆盖所有 NPU 的统一利用率接口。页面会区分“
 <a href="screenshots/performance-network-latest.png"><img width="100%" src="screenshots/performance-network-latest.png" alt="Network adaptive bandwidth, receive and send throughput, and interface details"></a>
 
 - 上图按收发合计速率自动调整纵轴，下图分别展示 Receive 与 Send。
+- 设备选择器默认定位到默认路由网卡，也可以查看 `All interfaces` 或逐个切换 Ethernet、Wi-Fi、Bridge、Tunnel 与虚拟接口。
+- 每个接口保留自己的 60 秒收发历史，切换网卡时不会把不同接口的数据连成同一条曲线。
 - 左侧资源小窗和主图共享 60 样本历史及同一自适应峰值余量，因此峰形和比例一致。
 - Details 提供主接口、连接类型、Link 状态、链路速率、累计流量、MAC、IPv4/IPv6、MTU 和接口数量。
 - 截图使用 RFC 文档专用地址 `192.0.2.10` 与 `2001:db8::10`，不是测试设备的真实地址。
