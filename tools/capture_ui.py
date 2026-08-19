@@ -101,8 +101,20 @@ def main() -> int:
         GLib.source_remove(window._timer_id)
 
     def capture() -> bool:
-        root = window.get_child()
-        capture_widget = window if os.environ.get("TMOG_CAPTURE_TITLEBAR") == "1" else root
+        details_dialog = None
+        if os.environ.get("TMOG_CAPTURE_PROCESS_DETAILS") == "1":
+            dialogs = [
+                widget
+                for widget in Gtk.Window.list_toplevels()
+                if isinstance(widget, Gtk.Dialog) and widget.get_visible()
+            ]
+            if not dialogs:
+                raise RuntimeError("Process Details dialog did not open")
+            details_dialog = dialogs[-1]
+            capture_widget = details_dialog
+        else:
+            root = window.get_child()
+            capture_widget = window if os.environ.get("TMOG_CAPTURE_TITLEBAR") == "1" else root
         allocation = capture_widget.get_allocation()
         print(f"capturing {window.stack.get_visible_child_name()} in {window._effective_theme} theme")
         if window.stack.get_visible_child_name() == "summary":
@@ -185,7 +197,11 @@ def main() -> int:
         context = cairo.Context(surface)
         capture_widget.draw(context)
         surface.write_to_png(str(output))
-        window.destroy()
+        if details_dialog is not None:
+            details_dialog.response(Gtk.ResponseType.CLOSE)
+            GLib.idle_add(window.destroy)
+        else:
+            window.destroy()
         return GLib.SOURCE_REMOVE
 
     def resample() -> bool:
@@ -242,13 +258,35 @@ def main() -> int:
         window._render_processes(window.snapshot.processes)
         return GLib.SOURCE_REMOVE
 
+    def open_process_details() -> bool:
+        if os.environ.get("TMOG_CAPTURE_PROCESS_DETAILS") != "1":
+            return GLib.SOURCE_REMOVE
+        if window.snapshot is None or not window.snapshot.processes:
+            raise RuntimeError("Process Details capture requires a populated process list")
+        process = next(
+            (item for item in window.snapshot.processes if item.pid == os.getpid()),
+            window.snapshot.processes[0],
+        )
+        window._open_process_details(process)
+        return GLib.SOURCE_REMOVE
+
+    def prepare_startup_capture() -> bool:
+        if window.stack.get_visible_child_name() != "startup":
+            return GLib.SOURCE_REMOVE
+        first = window.startup_store.get_iter_first()
+        if first is not None:
+            window.startup_view.get_selection().select_iter(first)
+        return GLib.SOURCE_REMOVE
+
     for delay in (800, 1700, 2600):
         GLib.timeout_add(delay, resample)
     if capture_cpu_count is not None:
         GLib.timeout_add(3200, override_core_count)
     GLib.timeout_add(3100, exercise_process_interactions)
+    GLib.timeout_add(3200, prepare_startup_capture)
     if os.environ.get("TMOG_CAPTURE_PUBLIC") == "1":
         GLib.timeout_add(3300, sanitize_public_capture, window)
+    GLib.timeout_add(3500, open_process_details)
     GLib.timeout_add_seconds(4, capture)
     Gtk.main()
     return 0

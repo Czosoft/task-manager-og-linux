@@ -96,6 +96,7 @@ headerbar button.titlebutton.close:hover { background: #c42b1c; color: #ffffff; 
 .toolbar { background: #171916; border-bottom: 1px solid #30342e; padding: 8px 12px; }
 .toolbar button, .compact-button { min-height: 28px; border-radius: 4px; background: #272a25; border: 1px solid #3b4038; color: #dce0d8; box-shadow: none; }
 .toolbar button:hover, .compact-button:hover { background: #32362f; }
+.toolbar button:disabled, .compact-button:disabled { background: #20221f; border-color: #30342e; color: #696e67; }
 .collapse-button { min-width: 24px; min-height: 24px; padding: 1px; border-radius: 3px; background: transparent; border: 1px solid #343832; color: #aeb5aa; box-shadow: none; }
 .collapse-button:hover { background: #292d27; color: #ffffff; }
 .danger-button { background: #492326; color: #ff9298; border-color: #753139; }
@@ -140,6 +141,12 @@ progressbar progress { background: #53e767; border: 0; min-height: 5px; }
 .history-graph, .core-graph { background: #131612; color: #bfc9ba; }
 menu, menuitem, popover { background: #20231f; color: #e8ebe5; }
 menuitem:hover { background: #30352e; color: #ffffff; }
+.process-details-dialog,
+.process-details-dialog box,
+.process-details-dialog viewport,
+.process-details-dialog scrolledwindow { background: #1a1c19; color: #e8ebe5; }
+.process-details-dialog scrolledwindow { border: 1px solid #343832; }
+.process-details-actions { border-top: 1px solid #343832; padding: 8px; }
 """
 
 
@@ -191,6 +198,7 @@ headerbar button.titlebutton.close:hover image { color: #ffffff; }
 .toolbar { background: #ececf0; border-bottom: 1px solid #c9c9ce; padding: 8px 12px; }
 .toolbar button, .compact-button { min-height: 28px; border-radius: 5px; background: #ffffff; border: 1px solid #b8bcc3; color: #2c2c2e; box-shadow: 0 1px 1px rgba(0, 0, 0, 0.05); }
 .toolbar button:hover, .compact-button:hover { background: #e6e6eb; }
+.toolbar button:disabled, .compact-button:disabled { background: #ededf0; border-color: #d2d2d7; color: #98989d; box-shadow: none; }
 .collapse-button { min-width: 24px; min-height: 24px; padding: 1px; border-radius: 4px; background: transparent; border: 1px solid #b8bcc3; color: #484b51; box-shadow: none; }
 .collapse-button:hover { background: #e6e6eb; color: #1d1d1f; }
 .danger-button { background: #fff1f1; color: #b4232d; border-color: #d9a2a6; }
@@ -235,6 +243,12 @@ progressbar progress { background: #0a84ff; border: 0; min-height: 5px; }
 .history-graph, .core-graph { background: #ffffff; color: #3f4248; }
 menu, menuitem, popover { background: #ffffff; color: #1d1d1f; }
 menuitem:hover { background: #e5e5ea; color: #000000; }
+.process-details-dialog,
+.process-details-dialog box,
+.process-details-dialog viewport,
+.process-details-dialog scrolledwindow { background: #ffffff; color: #1d1d1f; }
+.process-details-dialog scrolledwindow { border: 1px solid #c9c9ce; }
+.process-details-actions { border-top: 1px solid #c9c9ce; padding: 8px; }
 """
 
 
@@ -1651,17 +1665,59 @@ class TmogWindow(Gtk.Window):
         self.stack.add_named(page, "system")
 
     def _build_startup_page(self) -> None:
-        page, content = self._page_box("Startup Apps", "XDG AUTOSTART  /  READ ONLY")
-        note = Gtk.Label(label="Entries from system and user XDG autostart directories", xalign=0)
+        page, content = self._page_box("Startup Apps", "XDG AUTOSTART  /  MANAGED")
+        note = Gtk.Label(
+            label="System entries are managed through safe per-user XDG overrides",
+            xalign=0,
+        )
         note.get_style_context().add_class("muted")
         content.pack_start(note, False, False, 0)
-        self.startup_store = Gtk.ListStore(str, str, str, str)
-        view = Gtk.TreeView(model=self.startup_store)
-        add_text_column(view, "Name", 0, expand=True)
-        add_text_column(view, "Status", 1, width=90)
-        add_text_column(view, "Source", 2, width=90)
-        add_text_column(view, "Command", 3, expand=True)
-        content.pack_start(scrollable(view), True, True, 0)
+
+        toolbar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        toolbar.get_style_context().add_class("toolbar")
+        self.startup_count_label = Gtk.Label(label="Loading startup entries...")
+        self.startup_count_label.get_style_context().add_class("muted")
+        toolbar.pack_start(self.startup_count_label, True, True, 0)
+
+        self.startup_enable_button = Gtk.Button(label="Enable")
+        self.startup_enable_button.set_image(
+            Gtk.Image.new_from_icon_name("media-playback-start-symbolic", Gtk.IconSize.BUTTON)
+        )
+        self.startup_enable_button.set_always_show_image(True)
+        self.startup_enable_button.set_sensitive(False)
+        self.startup_enable_button.connect("clicked", lambda _button: self._set_startup_enabled(True))
+        toolbar.pack_start(self.startup_enable_button, False, False, 0)
+
+        self.startup_disable_button = Gtk.Button(label="Disable")
+        self.startup_disable_button.set_image(
+            Gtk.Image.new_from_icon_name("media-playback-pause-symbolic", Gtk.IconSize.BUTTON)
+        )
+        self.startup_disable_button.set_always_show_image(True)
+        self.startup_disable_button.set_sensitive(False)
+        self.startup_disable_button.connect("clicked", lambda _button: self._set_startup_enabled(False))
+        toolbar.pack_start(self.startup_disable_button, False, False, 0)
+
+        open_location = Gtk.Button(label="Open location")
+        open_location.set_image(Gtk.Image.new_from_icon_name("folder-open-symbolic", Gtk.IconSize.BUTTON))
+        open_location.set_always_show_image(True)
+        open_location.set_sensitive(False)
+        open_location.connect("clicked", self._open_startup_location)
+        self.startup_open_button = open_location
+        toolbar.pack_start(open_location, False, False, 0)
+
+        refresh = icon_button("view-refresh-symbolic", "Refresh startup entries")
+        refresh.connect("clicked", lambda _button: self._refresh_startup_entries())
+        toolbar.pack_start(refresh, False, False, 0)
+        content.pack_start(toolbar, False, False, 0)
+
+        self.startup_store = Gtk.ListStore(str, str, str, str, GObject.TYPE_PYOBJECT)
+        self.startup_view = Gtk.TreeView(model=self.startup_store)
+        add_text_column(self.startup_view, "Name", 0, expand=True)
+        add_text_column(self.startup_view, "Status", 1, width=90)
+        add_text_column(self.startup_view, "Source", 2, width=110)
+        add_text_column(self.startup_view, "Command", 3, expand=True)
+        self.startup_view.get_selection().connect("changed", self._startup_selection_changed)
+        content.pack_start(scrollable(self.startup_view), True, True, 0)
         self.stack.add_named(page, "startup")
 
     def _build_users_page(self) -> None:
@@ -2533,9 +2589,13 @@ class TmogWindow(Gtk.Window):
 
     def _open_process_details(self, process: ProcessInfo) -> None:
         dialog = Gtk.Dialog(title=f"{process.name}  /  PID {process.pid}", transient_for=self, modal=True)
-        dialog.add_button("Close", Gtk.ResponseType.CLOSE)
+        dialog.get_style_context().add_class("process-details-dialog")
+        close_button = dialog.add_button("Close", Gtk.ResponseType.CLOSE)
+        close_button.get_style_context().add_class("compact-button")
+        dialog.get_action_area().get_style_context().add_class("process-details-actions")
         dialog.set_default_size(680, 520)
         body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        body.get_style_context().add_class("process-details-body")
         body.set_border_width(16)
         details = DetailGrid(
             [
@@ -2571,8 +2631,12 @@ class TmogWindow(Gtk.Window):
         command.set_selectable(True)
         command.get_style_context().add_class("detail-value")
         body.pack_start(command_title, False, False, 0)
-        body.pack_start(scrollable(command), True, True, 0)
-        dialog.get_content_area().add(body)
+        command_scroller = scrollable(command)
+        command_scroller.get_style_context().add_class("process-details-scroll")
+        body.pack_start(command_scroller, True, True, 0)
+        content_area = dialog.get_content_area()
+        content_area.get_style_context().add_class("process-details-body")
+        content_area.add(body)
         dialog.show_all()
         dialog.run()
         dialog.destroy()
@@ -2644,15 +2708,78 @@ class TmogWindow(Gtk.Window):
         for user, values in sorted(grouped.items(), key=lambda item: int(item[1][2]), reverse=True):
             self.user_store.append((user, int(values[0]), float(values[1]), int(values[2])))
 
+    def _selected_startup_entry(self):
+        model, tree_iter = self.startup_view.get_selection().get_selected()
+        return model.get_value(tree_iter, 4) if tree_iter is not None else None
+
+    def _startup_selection_changed(self, _selection: Gtk.TreeSelection) -> None:
+        entry = self._selected_startup_entry()
+        self.startup_enable_button.set_sensitive(entry is not None and not entry.enabled)
+        self.startup_disable_button.set_sensitive(entry is not None and entry.enabled)
+        self.startup_open_button.set_sensitive(entry is not None)
+
+    def _set_startup_enabled(self, enabled: bool) -> None:
+        entry = self._selected_startup_entry()
+        if entry is None:
+            self._message("Select a startup app first", "Choose a row before changing its startup state.")
+            return
+        try:
+            self.collector.set_startup_enabled(entry, enabled)
+        except (OSError, ValueError, configparser.Error) as error:
+            self._message(
+                "Unable to update startup app",
+                str(error),
+                Gtk.MessageType.ERROR,
+            )
+            return
+        self._apply_startup_entries(self.collector.startup_entries(), entry.desktop_file.name)
+
+    def _open_startup_location(self, _button: Gtk.Button) -> None:
+        entry = self._selected_startup_entry()
+        if entry is None:
+            return
+        directory = Gio.File.new_for_path(str(entry.desktop_file.parent))
+        try:
+            Gio.AppInfo.launch_default_for_uri(directory.get_uri(), None)
+        except GLib.Error as error:
+            self._message("Unable to open startup location", str(error), Gtk.MessageType.ERROR)
+
+    def _refresh_startup_entries(self) -> None:
+        self.startup_count_label.set_text("Refreshing startup entries...")
+        threading.Thread(target=self._load_startup_entries, daemon=True).start()
+
+    def _load_startup_entries(self) -> None:
+        entries = self.collector.startup_entries()
+        GLib.idle_add(self._apply_startup_entries, entries)
+
+    def _apply_startup_entries(self, entries, selected_name: str | None = None) -> bool:
+        if selected_name is None:
+            selected = self._selected_startup_entry()
+            selected_name = selected.desktop_file.name if selected is not None else None
+        selected_path = None
+        self.startup_store.clear()
+        for item in entries:
+            tree_iter = self.startup_store.append(
+                (item.name, "Enabled" if item.enabled else "Disabled", item.source, item.command, item)
+            )
+            if item.desktop_file.name == selected_name:
+                selected_path = self.startup_store.get_path(tree_iter)
+        self.startup_count_label.set_text(
+            f"{len(entries)} entries  /  {sum(item.enabled for item in entries)} enabled"
+        )
+        if selected_path is not None:
+            self.startup_view.get_selection().select_path(selected_path)
+        else:
+            self._startup_selection_changed(self.startup_view.get_selection())
+        return GLib.SOURCE_REMOVE
+
     def _load_slow_lists(self) -> None:
         startup = self.collector.startup_entries()
         services = self.collector.services()
         GLib.idle_add(self._apply_slow_lists, startup, services)
 
     def _apply_slow_lists(self, startup, services) -> bool:
-        self.startup_store.clear()
-        for item in startup:
-            self.startup_store.append((item.name, "Enabled" if item.enabled else "Disabled", item.source, item.command))
+        self._apply_startup_entries(startup)
         self.service_store.clear()
         for service in services:
             self.service_store.append((service.unit, service.active, service.state, service.description))

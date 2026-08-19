@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import configparser
 import glob
 import ipaddress
 import os
@@ -162,6 +163,7 @@ class StartupEntry:
     command: str
     source: str
     enabled: bool
+    desktop_file: Path
 
 
 @dataclass(slots=True)
@@ -1314,30 +1316,88 @@ class LinuxMetricsCollector:
         ]
 
     @staticmethod
-    def startup_entries() -> list[StartupEntry]:
-        entries: list[StartupEntry] = []
-        locations = [(Path("/etc/xdg/autostart"), "System"), (Path.home() / ".config/autostart", "User")]
-        for directory, source in locations:
+    def _desktop_file(path: Path) -> configparser.ConfigParser:
+        parser = configparser.ConfigParser(interpolation=None, strict=False)
+        parser.optionxform = str
+        with path.open("r", encoding="utf-8", errors="replace") as stream:
+            parser.read_file(stream)
+        return parser
+
+    @staticmethod
+    def _xdg_autostart_locations() -> tuple[Path, list[Path]]:
+        user_root = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
+        system_value = os.environ.get("XDG_CONFIG_DIRS", "/etc/xdg")
+        system_roots = [Path(value) for value in system_value.split(os.pathsep) if value]
+        return user_root / "autostart", [root / "autostart" for root in system_roots]
+
+    @classmethod
+    def startup_entries(cls) -> list[StartupEntry]:
+        user_directory, system_directories = cls._xdg_autostart_locations()
+        system_paths: dict[str, Path] = {}
+        for directory in system_directories:
             for path in sorted(directory.glob("*.desktop")):
-                values: dict[str, str] = {}
-                try:
-                    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
-                        if "=" in line and not line.startswith("#"):
-                            key, value = line.split("=", 1)
-                            values.setdefault(key, value)
-                except OSError:
-                    continue
-                if values.get("Type", "Application") != "Application":
-                    continue
-                entries.append(
-                    StartupEntry(
-                        name=values.get("Name", path.stem),
-                        command=values.get("Exec", ""),
-                        source=source,
-                        enabled=values.get("Hidden", "false").lower() != "true",
-                    )
+                system_paths.setdefault(path.name, path)
+
+        candidates: dict[str, tuple[Path, str]] = {
+            name: (path, "System") for name, path in system_paths.items()
+        }
+        for path in sorted(user_directory.glob("*.desktop")):
+            source = "User override" if path.name in system_paths else "User"
+            candidates[path.name] = (path, source)
+
+        entries: list[StartupEntry] = []
+        for path, source in candidates.values():
+            try:
+                parser = cls._desktop_file(path)
+                values = parser["Desktop Entry"]
+            except (OSError, KeyError, configparser.Error):
+                continue
+            if values.get("Type", "Application") != "Application":
+                continue
+            hidden = values.get("Hidden", "false").strip().lower() == "true"
+            desktop_enabled = (
+                values.get("X-GNOME-Autostart-enabled", "true").strip().lower() != "false"
+            )
+            entries.append(
+                StartupEntry(
+                    name=values.get("Name", path.stem),
+                    command=values.get("Exec", ""),
+                    source=source,
+                    enabled=not hidden and desktop_enabled,
+                    desktop_file=path,
                 )
-        return entries
+            )
+        return sorted(entries, key=lambda entry: entry.name.casefold())
+
+    @classmethod
+    def set_startup_enabled(cls, entry: StartupEntry, enabled: bool) -> Path:
+        source = entry.desktop_file
+        if not source.is_file():
+            raise FileNotFoundError(f"Startup entry no longer exists: {source}")
+
+        user_directory, _system_directories = cls._xdg_autostart_locations()
+        if entry.source == "System":
+            user_directory.mkdir(parents=True, exist_ok=True)
+            target = user_directory / source.name
+            shutil.copyfile(source, target)
+        else:
+            target = source
+
+        parser = cls._desktop_file(target)
+        if not parser.has_section("Desktop Entry"):
+            raise ValueError(f"Invalid desktop entry: {target}")
+        parser.set("Desktop Entry", "Hidden", str(not enabled).lower())
+        parser.set("Desktop Entry", "X-GNOME-Autostart-enabled", str(enabled).lower())
+
+        temporary = target.with_name(f".{target.name}.tmog.tmp")
+        try:
+            with temporary.open("w", encoding="utf-8", newline="\n") as stream:
+                parser.write(stream, space_around_delimiters=False)
+            temporary.chmod(0o644)
+            os.replace(temporary, target)
+        finally:
+            temporary.unlink(missing_ok=True)
+        return target
 
     @staticmethod
     def services() -> list[ServiceInfo]:

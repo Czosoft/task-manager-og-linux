@@ -185,9 +185,9 @@ Machine identity 汇总发行版、Kernel、主机名、架构、处理器、物
 
 ### 12. Startup Apps 自启动项
 
-<a href="screenshots/startup-apps-latest.png"><img width="100%" src="screenshots/startup-apps-latest.png" alt="Read-only XDG startup application list"></a>
+<a href="screenshots/startup-apps-latest.png"><img width="100%" src="screenshots/startup-apps-latest.png" alt="Managed XDG startup application list with enable and disable controls"></a>
 
-读取系统与当前用户的 XDG autostart 目录，显示名称、启用状态、来源和命令。当前页面保持只读，避免系统监视器意外修改桌面启动配置。
+读取系统与当前用户的 XDG autostart 目录，显示名称、启用状态、来源和命令。选择条目后可以启用、禁用或打开配置位置；系统级条目会通过当前用户目录中的 XDG override 管理，不会直接修改 `/etc/xdg/autostart`。
 
 ### 13. Users 用户资源汇总
 
@@ -290,7 +290,7 @@ tmog-linux
 - 普通用户只能控制自己有权限操作的进程。
 - PID 1 与监视器自身受到保护，不能从界面结束。
 - 不建议使用 `sudo ./run.sh` 启动整个界面。管理系统服务时请继续使用 `systemctl` 或系统自带工具。
-- Services 与 Startup Apps 当前保持只读，避免监视器意外修改系统启动状态。
+- Services 当前保持只读；Startup Apps 仅管理 XDG 桌面自启动条目，不修改 systemd 服务。
 
 ## 开发与验证
 

@@ -6,6 +6,7 @@ from unittest.mock import call, patch
 
 from tmog_linux.metrics import (
     LinuxMetricsCollector,
+    StartupEntry,
     cpu_percent,
     format_bytes,
     parse_cpu_stat,
@@ -125,6 +126,66 @@ class ParserTests(unittest.TestCase):
                 collector._read_process_control_group(process_dir),
                 "/user.slice/user-1000.slice/app.scope",
             )
+
+    def test_startup_entries_honor_user_override_and_can_be_reenabled(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            user_config = root / "user"
+            system_config = root / "system"
+            user_autostart = user_config / "autostart"
+            system_autostart = system_config / "autostart"
+            user_autostart.mkdir(parents=True)
+            system_autostart.mkdir(parents=True)
+            system_entry = system_autostart / "example.desktop"
+            system_entry.write_text(
+                "[Desktop Entry]\nType=Application\nName=Example\nExec=example --start\n",
+                encoding="utf-8",
+            )
+
+            with patch.dict(
+                "os.environ",
+                {"XDG_CONFIG_HOME": str(user_config), "XDG_CONFIG_DIRS": str(system_config)},
+                clear=False,
+            ):
+                entries = LinuxMetricsCollector.startup_entries()
+                self.assertEqual(len(entries), 1)
+                self.assertEqual(entries[0].source, "System")
+                self.assertTrue(entries[0].enabled)
+
+                override = LinuxMetricsCollector.set_startup_enabled(entries[0], False)
+                self.assertEqual(override, user_autostart / "example.desktop")
+                disabled = LinuxMetricsCollector.startup_entries()[0]
+                self.assertEqual(disabled.source, "User override")
+                self.assertFalse(disabled.enabled)
+
+                LinuxMetricsCollector.set_startup_enabled(disabled, True)
+                enabled = LinuxMetricsCollector.startup_entries()[0]
+                self.assertTrue(enabled.enabled)
+                self.assertEqual(enabled.command, "example --start")
+
+    def test_user_startup_entry_can_be_disabled_in_place(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            user_config = root / "user"
+            user_autostart = user_config / "autostart"
+            user_autostart.mkdir(parents=True)
+            desktop_file = user_autostart / "personal.desktop"
+            desktop_file.write_text(
+                "[Desktop Entry]\nType=Application\nName=Personal\nExec=personal %u\n",
+                encoding="utf-8",
+            )
+            entry = StartupEntry("Personal", "personal %u", "User", True, desktop_file)
+
+            with patch.dict(
+                "os.environ",
+                {"XDG_CONFIG_HOME": str(user_config), "XDG_CONFIG_DIRS": str(root / "system")},
+                clear=False,
+            ):
+                target = LinuxMetricsCollector.set_startup_enabled(entry, False)
+                self.assertEqual(target, desktop_file)
+                disabled = LinuxMetricsCollector.startup_entries()[0]
+                self.assertFalse(disabled.enabled)
+                self.assertEqual(disabled.command, "personal %u")
 
     def test_thermal_reader_preserves_individual_hwmon_sensors(self):
         with TemporaryDirectory() as directory:
