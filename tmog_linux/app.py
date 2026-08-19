@@ -856,6 +856,15 @@ def icon_button(icon: str, tooltip: str, css_class: str = "compact-button") -> G
     return button
 
 
+def available_icon_name(*candidates: str) -> str:
+    theme = Gtk.IconTheme.get_default()
+    if theme is not None:
+        for candidate in candidates:
+            if theme.has_icon(candidate):
+                return candidate
+    return candidates[-1]
+
+
 def card(title: str, child: Gtk.Widget, color: str | None = None) -> Gtk.Box:
     container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
     container.get_style_context().add_class("card")
@@ -1095,9 +1104,14 @@ class TmogWindow(Gtk.Window):
         subtitle = Gtk.Label(label="NATIVE SYSTEM METRICS", xalign=0)
         subtitle.get_style_context().add_class("brand-subtitle")
         sidebar.pack_start(subtitle, False, False, 0)
+        performance_icon = available_icon_name(
+            "power-profile-performance-symbolic",
+            "network-transmit-receive-symbolic",
+            "view-list-symbolic",
+        )
         items = [
             ("summary", "Summary", "view-grid-symbolic"),
-            ("performance", "Performance", "utilities-system-monitor-symbolic"),
+            ("performance", "Performance", performance_icon),
             ("processes", "Processes", "system-run-symbolic"),
             ("system", "System Info", "computer-symbolic"),
             ("startup", "Startup Apps", "media-playback-start-symbolic"),
