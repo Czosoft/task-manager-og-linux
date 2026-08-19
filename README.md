@@ -63,6 +63,8 @@ Summary 是启动后的全局状态页，适合快速判断当前瓶颈：
 
 第一行按照 TMOG 的信息密度加高，Live meters 的分段柱、CPU 双轴历史和 Top CPU processes 会使用相同高度。CPU 图内绿色与橙色曲线分别使用独立纵轴，底部详情同时保留逻辑处理器、频率、热点温度和 Kernel 百分比。
 
+默认窗口高度按照完整 Summary 的最小内容高度再增加 `10px` 设置；在标准字体与缩放下默认尺寸为 `1240×799`。启动后还会按实际 GTK 字体度量补足少量高度，避免首次打开时 Summary 底部落入滚动区域；屏幕本身高度不足时仍保留外层滚动。
+
 <a href="screenshots/summary-dark-latest.png"><img width="100%" src="screenshots/summary-dark-latest.png" alt="Summary page in dark mode"></a>
 
 ### 2. CPU 与自适应逻辑处理器
@@ -76,6 +78,7 @@ CPU 页面从上到下分为四层：当前利用率条、Overall 历史、Logic
 - Overall 同时绘制总利用率和 Kernel 时间，不把两者误当成独立总量。
 - 28 个逻辑处理器根据可用宽度自动计算列数、图块高度与密度。
 - Details 卡片按内容自然结束，包含频率、核心数、逻辑处理器数、缓存、Interrupts 和 Context switches。
+- Overall 与 Logical processors 的展开/折叠状态会保存在用户设置中，重新启动后自动恢复。
 - 页面只有统一的外层滚动，逻辑处理器卡片内部不会再出现遮挡最后一行的滚动条。
 
 Overall 与 Logical processors 都可以单独收起。收起 Overall 后，下面的逻辑处理器区域立即重新计算高度，使用释放出来的空间；Details 会紧接图表结束，不会被空白区域推到窗口底部。
@@ -198,7 +201,7 @@ Machine identity 汇总发行版、Kernel、主机名、架构、处理器、物
 
 ### 15. Settings 与双主题
 
-Settings 提供三种外观选项：`Follow system`、`Dark` 和 `Light`。Follow system 会跟随 AnduinOS/Ubuntu 的颜色方案；固定模式不受桌面主题变化影响。选择保存在 `~/.config/tmog-linux/settings.ini`。
+Settings 提供三种外观选项：`Follow system`、`Dark` 和 `Light`。Follow system 会跟随 AnduinOS/Ubuntu 的颜色方案；固定模式不受桌面主题变化影响。主题选择以及 CPU 的 Overall、Logical processors 展开状态都会保存在 `~/.config/tmog-linux/settings.ini`。
 
 <table>
   <tr>

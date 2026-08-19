@@ -46,6 +46,8 @@ RESOURCE_GRAPH_MAXIMA = {
     "energy": None,
     "thermals": 110.0,
 }
+SUMMARY_DEFAULT_WINDOW_HEIGHT = 799
+SUMMARY_VIEWPORT_MARGIN = 10
 
 
 DARK_CSS = b"""
@@ -247,13 +249,27 @@ def theme_config_path() -> Path:
     return Path(GLib.get_user_config_dir()) / "tmog-linux" / "settings.ini"
 
 
-def load_theme_preference(path: Path | None = None) -> str:
+def _read_settings(path: Path) -> configparser.ConfigParser:
     parser = configparser.ConfigParser()
     try:
-        parser.read(path or theme_config_path(), encoding="utf-8")
-        preference = parser.get("appearance", "theme", fallback="system").lower()
+        parser.read(path, encoding="utf-8")
     except (configparser.Error, OSError):
-        return "system"
+        return configparser.ConfigParser()
+    return parser
+
+
+def _write_settings(parser: configparser.ConfigParser, path: Path) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("w", encoding="utf-8") as stream:
+            parser.write(stream)
+    except OSError:
+        pass
+
+
+def load_theme_preference(path: Path | None = None) -> str:
+    parser = _read_settings(path or theme_config_path())
+    preference = parser.get("appearance", "theme", fallback="system").lower()
     return preference if preference in THEME_CHOICES else "system"
 
 
@@ -261,14 +277,36 @@ def save_theme_preference(preference: str, path: Path | None = None) -> None:
     if preference not in THEME_CHOICES:
         return
     destination = path or theme_config_path()
-    parser = configparser.ConfigParser()
-    parser["appearance"] = {"theme": preference}
+    parser = _read_settings(destination)
+    if not parser.has_section("appearance"):
+        parser.add_section("appearance")
+    parser.set("appearance", "theme", preference)
+    _write_settings(parser, destination)
+
+
+def load_cpu_section_preferences(path: Path | None = None) -> dict[str, bool]:
+    parser = _read_settings(path or theme_config_path())
     try:
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        with destination.open("w", encoding="utf-8") as stream:
-            parser.write(stream)
-    except OSError:
-        pass
+        return {
+            "overall": parser.getboolean("performance", "cpu_overall_expanded", fallback=True),
+            "logical": parser.getboolean("performance", "cpu_logical_expanded", fallback=True),
+        }
+    except ValueError:
+        return {"overall": True, "logical": True}
+
+
+def save_cpu_section_preferences(
+    overall_expanded: bool,
+    logical_expanded: bool,
+    path: Path | None = None,
+) -> None:
+    destination = path or theme_config_path()
+    parser = _read_settings(destination)
+    if not parser.has_section("performance"):
+        parser.add_section("performance")
+    parser.set("performance", "cpu_overall_expanded", str(overall_expanded).lower())
+    parser.set("performance", "cpu_logical_expanded", str(logical_expanded).lower())
+    _write_settings(parser, destination)
 
 
 def style_rgb(widget: Gtk.Widget, *, background: bool = False) -> tuple[float, float, float]:
@@ -293,6 +331,13 @@ def graph_fraction(value: float, maximum: float) -> float:
     if maximum <= 0:
         return 0.0
     return max(0.0, min(1.0, value / maximum))
+
+
+def summary_height_adjustment(content_height: float, viewport_height: float) -> int:
+    overflow = content_height - viewport_height
+    if overflow <= 0:
+        return 0
+    return math.ceil(overflow + SUMMARY_VIEWPORT_MARGIN)
 
 
 class HistoryGraph(Gtk.DrawingArea):
@@ -823,7 +868,13 @@ def card(title: str, child: Gtk.Widget, color: str | None = None) -> Gtk.Box:
     return container
 
 
-def collapsible_card(title: str, child: Gtk.Widget, color: str | None = None) -> Gtk.Box:
+def collapsible_card(
+    title: str,
+    child: Gtk.Widget,
+    color: str | None = None,
+    *,
+    expanded: bool = True,
+) -> Gtk.Box:
     container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
     container.get_style_context().add_class("card")
     header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
@@ -836,26 +887,31 @@ def collapsible_card(title: str, child: Gtk.Widget, color: str | None = None) ->
     header.pack_end(toggle, False, False, 0)
     section_body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
     section_body.pack_start(child, True, True, 0)
-    container.section_expanded = True
+    container.section_expanded = expanded
 
-    def toggle_section(_button: Gtk.Button) -> None:
-        expanded = container.section_expanded
-        container.section_expanded = not expanded
-        if expanded:
-            section_body.hide()
-        else:
+    def set_section_expanded(value: bool) -> None:
+        container.section_expanded = value
+        section_body.set_no_show_all(not value)
+        if value:
             section_body.show_all()
-        icon = "go-down-symbolic" if expanded else "go-up-symbolic"
-        action = "Expand" if expanded else "Collapse"
+        else:
+            section_body.hide()
+        icon = "go-up-symbolic" if value else "go-down-symbolic"
+        action = "Collapse" if value else "Expand"
         toggle.set_image(Gtk.Image.new_from_icon_name(icon, Gtk.IconSize.BUTTON))
         toggle.set_tooltip_text(f"{action} {title}")
         container.queue_resize()
+
+    def toggle_section(_button: Gtk.Button) -> None:
+        set_section_expanded(not container.section_expanded)
 
     toggle.connect("clicked", toggle_section)
     container.pack_start(header, False, False, 0)
     container.pack_start(section_body, True, True, 0)
     container.collapse_button = toggle
     container.section_body = section_body
+    container.set_section_expanded = set_section_expanded
+    set_section_expanded(expanded)
     return container
 
 
@@ -881,7 +937,7 @@ def add_text_column(view: Gtk.TreeView, title: str, model_index: int, *, expand:
 class TmogWindow(Gtk.Window):
     def __init__(self) -> None:
         super().__init__(title="Task Manager OG // Linux")
-        self.set_default_size(1240, 720)
+        self.set_default_size(1240, SUMMARY_DEFAULT_WINDOW_HEIGHT)
         self.set_size_request(900, 600)
         self.set_icon_name("utilities-system-monitor")
         self.collector = LinuxMetricsCollector()
@@ -892,9 +948,13 @@ class TmogWindow(Gtk.Window):
         self._sample_generation = 0
         self._current_user = getpass.getuser()
         self._timer_id: int | None = None
+        self._summary_default_fit_enabled = True
+        self._summary_default_fit_passes = 0
         self.nav_buttons: dict[str, Gtk.ToggleButton] = {}
         self.process_cpu_bars_enabled = True
         self.theme_preference = load_theme_preference()
+        self.cpu_section_preferences = load_cpu_section_preferences()
+        self._cpu_section_persistence_enabled = True
         self._gtk_settings = Gtk.Settings.get_default()
         self._desktop_settings = self._get_desktop_interface_settings()
         self._effective_theme = self._resolve_theme(self.theme_preference)
@@ -942,6 +1002,7 @@ class TmogWindow(Gtk.Window):
         self.connect("key-press-event", self._on_key_press)
         self.connect("destroy", Gtk.main_quit)
         self.show_all()
+        GLib.idle_add(self._fit_summary_default_height)
         self.request_update()
         self._timer_id = GLib.timeout_add_seconds(self.refresh_seconds, self._timer_tick)
         threading.Thread(target=self._load_slow_lists, daemon=True).start()
@@ -996,6 +1057,33 @@ class TmogWindow(Gtk.Window):
     def _on_system_theme_changed(self, *_args) -> None:
         if self.theme_preference == "system":
             self._apply_theme("system")
+
+    def _fit_summary_default_height(self) -> bool:
+        if not self._summary_default_fit_enabled or self._summary_default_fit_passes >= 3:
+            return GLib.SOURCE_REMOVE
+        adjustment = self.summary_scroller.get_vadjustment()
+        missing_height = summary_height_adjustment(
+            adjustment.get_upper(), adjustment.get_page_size()
+        )
+        if missing_height == 0:
+            return GLib.SOURCE_REMOVE
+
+        width, height = self.get_size()
+        target_height = height + missing_height
+        display = Gdk.Display.get_default()
+        gdk_window = self.get_window()
+        if display is not None and gdk_window is not None:
+            monitor = display.get_monitor_at_window(gdk_window)
+            if monitor is not None:
+                workarea = monitor.get_workarea()
+                target_height = min(target_height, max(600, workarea.height - 20))
+        if target_height <= height:
+            return GLib.SOURCE_REMOVE
+
+        self._summary_default_fit_passes += 1
+        self.resize(width, target_height)
+        GLib.timeout_add(40, self._fit_summary_default_height)
+        return GLib.SOURCE_REMOVE
 
     def _build_sidebar(self) -> Gtk.Box:
         sidebar = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
@@ -1077,10 +1165,13 @@ class TmogWindow(Gtk.Window):
 
     def _build_summary_page(self) -> None:
         page, content = self._page_box("Summary", "SYSTEM SUMMARY  /  LIVE")
+        self.summary_page = page
         grid = Gtk.Grid(column_spacing=10, row_spacing=10)
+        self.summary_grid = grid
         grid.set_vexpand(True)
         grid.set_valign(Gtk.Align.FILL)
-        content.pack_start(scrollable(grid), True, True, 0)
+        self.summary_scroller = scrollable(grid)
+        content.pack_start(self.summary_scroller, True, True, 0)
 
         meters = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=3)
         self.cpu_meter = SegmentMeter("CPU", "green")
@@ -1250,7 +1341,16 @@ class TmogWindow(Gtk.Window):
             "energy": "Power history",
             "thermals": "Sensor history",
         }[name]
-        graph_card = collapsible_card(graph_title, graph, color) if name == "cpu" else card(graph_title, graph, color)
+        graph_card = (
+            collapsible_card(
+                graph_title,
+                graph,
+                color,
+                expanded=self.cpu_section_preferences["overall"],
+            )
+            if name == "cpu"
+            else card(graph_title, graph, color)
+        )
         if name == "cpu":
             self.cpu_overall_section = graph_card
         content.pack_start(graph_card, False, True, 0)
@@ -1272,7 +1372,10 @@ class TmogWindow(Gtk.Window):
             self._pending_core_grid_layout: tuple[str, int] | None = None
             self._core_grid_layout_source: int | None = None
             self.cpu_logical_section = collapsible_card(
-                "Logical processors / per-core history", self.core_grid, "green"
+                "Logical processors / per-core history",
+                self.core_grid,
+                "green",
+                expanded=self.cpu_section_preferences["logical"],
             )
             self.cpu_overall_section.collapse_button.connect("clicked", self._on_cpu_section_toggled)
             self.cpu_logical_section.collapse_button.connect("clicked", self._on_cpu_section_toggled)
@@ -2064,6 +2167,11 @@ class TmogWindow(Gtk.Window):
         self._layout_core_grid(allocation.width)
 
     def _on_cpu_section_toggled(self, _button: Gtk.Button) -> None:
+        if self._cpu_section_persistence_enabled:
+            save_cpu_section_preferences(
+                self.cpu_overall_section.section_expanded,
+                self.cpu_logical_section.section_expanded,
+            )
         GLib.idle_add(self._relayout_core_grid_after_section_toggle)
 
     def _relayout_core_grid_after_section_toggle(self) -> bool:

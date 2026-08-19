@@ -236,7 +236,7 @@ ssh-keyscan -t ed25519 gitlab.aiursoft.com -p 2202
 如果正确命令仍显示 `(stdin) is not a public key file`，表示 `ssh-keyscan` 没有取得任何主机公钥。先直接检查服务器返回：
 
 ```bash
-ssh-keyscan -p 2202 gitlab.aiursoft.com
+ssh-keyscan -p 2202 ssh.aiursoft.com
 ```
 
 完全没有输出时，检查专线连通性、域名、端口和防火墙；有输出但没有 `ssh-ed25519` 时，需要向管理员确认该服务器实际启用的主机密钥类型和官方指纹。
@@ -256,6 +256,7 @@ Host aiursoft-gitlab
 ## 8. 配置两个 SSH 主机别名
 
 编辑 `$HOME/.ssh/config`：
+`nano ~/.ssh/config `
 
 ```sshconfig
 Host github-publish
@@ -282,6 +283,7 @@ chmod 0600 "$HOME/.ssh/id_ed25519_aiursoft_publish"
 chmod 0644 "$HOME/.ssh/id_ed25519_github_publish.pub"
 chmod 0644 "$HOME/.ssh/id_ed25519_aiursoft_publish.pub"
 ```
+
 
 ## 9. 把公钥登记到网站
 
@@ -397,7 +399,7 @@ Aiursoft GitLab：
 
 ```bash
 git remote add aiursoft \
-  git@aiursoft-gitlab:<AIURSOFT_NAMESPACE>/task-manager-og-linux.git
+  git@aiursoft-gitlab:rdf/task-manager-og-linux.git
 ```
 
 检查地址：

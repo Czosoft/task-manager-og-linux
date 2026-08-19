@@ -56,6 +56,9 @@ def main() -> int:
         raise SystemExit("usage: capture_ui.py OUTPUT.png [PAGE] [PERFORMANCE_RESOURCE]")
     output = Path(sys.argv[1])
     window = TmogWindow()
+    window._cpu_section_persistence_enabled = False
+    window.cpu_overall_section.set_section_expanded(True)
+    window.cpu_logical_section.set_section_expanded(True)
     capture_theme = os.environ.get("TMOG_CAPTURE_THEME")
     if capture_theme:
         if capture_theme not in ("system", "dark", "light"):
@@ -63,6 +66,7 @@ def main() -> int:
         window._apply_theme(capture_theme)
     capture_size = os.environ.get("TMOG_CAPTURE_SIZE")
     if capture_size:
+        window._summary_default_fit_enabled = False
         try:
             width, height = (int(value) for value in capture_size.lower().split("x", 1))
         except ValueError as error:
@@ -101,6 +105,15 @@ def main() -> int:
         capture_widget = window if os.environ.get("TMOG_CAPTURE_TITLEBAR") == "1" else root
         allocation = capture_widget.get_allocation()
         print(f"capturing {window.stack.get_visible_child_name()} in {window._effective_theme} theme")
+        if window.stack.get_visible_child_name() == "summary":
+            adjustment = window.summary_scroller.get_vadjustment()
+            overflow = max(0.0, adjustment.get_upper() - adjustment.get_page_size())
+            print(
+                f"summary-scroll: content={adjustment.get_upper():.0f}px, "
+                f"viewport={adjustment.get_page_size():.0f}px, overflow={overflow:.0f}px"
+            )
+            if os.environ.get("TMOG_CAPTURE_ASSERT_SUMMARY_FITS") == "1" and overflow > 0.5:
+                raise RuntimeError(f"Summary still scrolls vertically by {overflow:.0f}px")
         for name, row in window.resource_rows.items():
             main_graph = window.perf_widgets[name]["graph"]
             if row.sparkline.fixed_max != main_graph.fixed_max:

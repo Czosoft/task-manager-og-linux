@@ -5,10 +5,15 @@ from tempfile import TemporaryDirectory
 
 from tmog_linux.app import (
     RESOURCE_GRAPH_MAXIMA,
+    SUMMARY_DEFAULT_WINDOW_HEIGHT,
+    SUMMARY_VIEWPORT_MARGIN,
     graph_fraction,
     graph_maximum,
+    load_cpu_section_preferences,
     load_theme_preference,
+    save_cpu_section_preferences,
     save_theme_preference,
+    summary_height_adjustment,
 )
 
 
@@ -30,11 +35,41 @@ class AppearancePreferenceTests(unittest.TestCase):
         self.assertEqual(graph_fraction(120.0, 110.0), 1.0)
         self.assertEqual(graph_fraction(10.0, 0.0), 0.0)
 
+    def test_default_window_fits_summary_with_ten_pixel_margin(self):
+        self.assertEqual(SUMMARY_DEFAULT_WINDOW_HEIGHT, 799)
+        self.assertEqual(SUMMARY_VIEWPORT_MARGIN, 10)
+        self.assertEqual(summary_height_adjustment(662.0, 593.0), 79)
+        self.assertEqual(summary_height_adjustment(662.0, 672.0), 0)
+        self.assertEqual(summary_height_adjustment(692.0, 692.0), 0)
+
     def test_theme_preference_round_trip(self):
         with TemporaryDirectory() as directory:
             path = Path(directory) / "tmog-linux" / "settings.ini"
             save_theme_preference("light", path)
             self.assertEqual(load_theme_preference(path), "light")
+
+    def test_cpu_section_preferences_round_trip_without_overwriting_theme(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "tmog-linux" / "settings.ini"
+            save_theme_preference("dark", path)
+            save_cpu_section_preferences(False, True, path)
+            self.assertEqual(load_cpu_section_preferences(path), {"overall": False, "logical": True})
+            self.assertEqual(load_theme_preference(path), "dark")
+
+            save_theme_preference("light", path)
+            self.assertEqual(load_cpu_section_preferences(path), {"overall": False, "logical": True})
+
+    def test_invalid_cpu_section_preferences_fall_back_to_expanded(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "settings.ini"
+            parser = configparser.ConfigParser()
+            parser["performance"] = {
+                "cpu_overall_expanded": "sometimes",
+                "cpu_logical_expanded": "false",
+            }
+            with path.open("w", encoding="utf-8") as stream:
+                parser.write(stream)
+            self.assertEqual(load_cpu_section_preferences(path), {"overall": True, "logical": True})
 
     def test_invalid_theme_falls_back_to_system(self):
         with TemporaryDirectory() as directory:
