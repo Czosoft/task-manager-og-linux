@@ -95,7 +95,7 @@ def main() -> int:
         elif sys.argv[2] == "performance" and resource in window.resource_rows:
             window.resource_rows[resource].set_active(True)
         elif sys.argv[2] == "processes":
-            window.process_view_combo.set_active_id(sys.argv[3])
+            window.process_view_combo.set_active_id("all" if resource == "interactions" else resource)
     window.present()
     if window._timer_id is not None:
         GLib.source_remove(window._timer_id)
@@ -158,6 +158,28 @@ def main() -> int:
             )
             if allocated_details_height > natural_details_height + 1:
                 raise RuntimeError("CPU details card expands beyond its content")
+        if os.environ.get("TMOG_CAPTURE_ASSERT_PROCESS_INTERACTIONS") == "1":
+            expected_pid = process_interaction_state.get("pid")
+            selected = window._selected_process()
+            sort_column, sort_order = window.process_sort.get_sort_column_id()
+            scroll_value = window.process_scroller.get_vadjustment().get_value()
+            print(
+                f"process-interactions: selected={selected.pid if selected else None}, "
+                f"sort={sort_column}/{sort_order.value_nick}, scroll={scroll_value:.0f}px, "
+                f"menu={process_interaction_state.get('menu')}"
+            )
+            if expected_pid is None or selected is None or selected.pid != expected_pid:
+                raise RuntimeError("Process selection was not preserved across refresh")
+            if sort_column != 5 or sort_order != Gtk.SortType.DESCENDING:
+                raise RuntimeError("Process Memory descending sort was not preserved")
+            if process_interaction_state.get("scroll", 0.0) > 0.5 and scroll_value <= 0.5:
+                raise RuntimeError("Process scroll position returned to the first row")
+        if window.stack.get_visible_child_name() == "processes" and resource == "tree":
+            sort_column, _sort_order = window.process_sort.get_sort_column_id()
+            if sort_column != 12:
+                raise RuntimeError("Process tree mode was flattened by table sorting")
+            if any(column.get_clickable() for column in window.process_view.get_columns()):
+                raise RuntimeError("Process tree mode still exposes flat table sorting")
         output.parent.mkdir(parents=True, exist_ok=True)
         surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, allocation.width, allocation.height)
         context = cairo.Context(surface)
@@ -175,10 +197,56 @@ def main() -> int:
         window._update_core_graphs(values, [""] * len(values))
         return GLib.SOURCE_REMOVE
 
+    process_interaction_state: dict[str, object] = {}
+
+    def exercise_process_interactions() -> bool:
+        if os.environ.get("TMOG_CAPTURE_ASSERT_PROCESS_INTERACTIONS") != "1":
+            return GLib.SOURCE_REMOVE
+        if window.stack.get_visible_child_name() != "processes" or window.snapshot is None:
+            raise RuntimeError("Processes interaction check requires a populated Processes page")
+
+        memory_column = window.process_view.get_column(5)
+        memory_column.clicked()
+        memory_column.clicked()
+        sort_column, sort_order = window.process_sort.get_sort_column_id()
+        if sort_column != 5 or sort_order != Gtk.SortType.DESCENDING:
+            raise RuntimeError("Clicking the Memory header did not toggle to descending sort")
+        row_count = window.process_sort.iter_n_children(None)
+        if row_count < 3:
+            raise RuntimeError("Processes interaction check needs at least three rows")
+        path = Gtk.TreePath.new_from_indices([row_count // 2])
+        tree_iter = window.process_sort.get_iter(path)
+        process_interaction_state["pid"] = window.process_sort.get_value(tree_iter, 0)
+        window.process_view.get_selection().select_path(path)
+
+        adjustment = window.process_scroller.get_vadjustment()
+        maximum = max(adjustment.get_lower(), adjustment.get_upper() - adjustment.get_page_size())
+        target_scroll = min(maximum, max(1.0, adjustment.get_page_size() * 0.5))
+        adjustment.set_value(target_scroll)
+        process_interaction_state["scroll"] = target_scroll
+
+        selected = window._selected_process()
+        if selected is None:
+            raise RuntimeError("Process context menu check lost its selected process")
+        window._build_process_menu(selected)
+        labels = [
+            child.get_label()
+            for child in window._process_context_menu.get_children()
+            if isinstance(child, Gtk.MenuItem) and not isinstance(child, Gtk.SeparatorMenuItem)
+        ]
+        expected_labels = ["End process", "Force stop", "Pause process", "Resume process", "Details"]
+        if labels != expected_labels:
+            raise RuntimeError(f"Unexpected process context menu items: {labels}")
+        process_interaction_state["menu"] = ", ".join(labels)
+
+        window._render_processes(window.snapshot.processes)
+        return GLib.SOURCE_REMOVE
+
     for delay in (800, 1700, 2600):
         GLib.timeout_add(delay, resample)
     if capture_cpu_count is not None:
         GLib.timeout_add(3200, override_core_count)
+    GLib.timeout_add(3100, exercise_process_interactions)
     if os.environ.get("TMOG_CAPTURE_PUBLIC") == "1":
         GLib.timeout_add(3300, sanitize_public_capture, window)
     GLib.timeout_add_seconds(4, capture)

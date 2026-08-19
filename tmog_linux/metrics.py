@@ -41,6 +41,10 @@ class ProcessInfo:
     read_bytes: int
     write_bytes: int
     started_at: float
+    swap_bytes: int = 0
+    user_cpu_seconds: float = 0.0
+    system_cpu_seconds: float = 0.0
+    control_group: str = "/"
 
 
 @dataclass(slots=True)
@@ -343,6 +347,8 @@ def parse_process_stat(text: str) -> dict[str, int | str]:
         "name": name,
         "state": fields[0],
         "ppid": int(fields[1]),
+        "user_ticks": int(fields[11]),
+        "system_ticks": int(fields[12]),
         "cpu_ticks": int(fields[11]) + int(fields[12]),
         "threads": int(fields[17]),
         "start_ticks": int(fields[19]),
@@ -975,7 +981,9 @@ class LinuxMetricsCollector:
             pass
         return values.get("read_bytes", 0), values.get("write_bytes", 0)
 
-    def _read_process_user(self, process_dir: Path) -> str:
+    def _read_process_identity(self, process_dir: Path) -> tuple[str, int]:
+        user = "?"
+        swap_bytes = 0
         try:
             status = (process_dir / "status").read_text(encoding="utf-8", errors="replace")
             match = re.search(r"^Uid:\s+(\d+)", status, re.MULTILINE)
@@ -983,13 +991,29 @@ class LinuxMetricsCollector:
                 uid = int(match.group(1))
                 if pwd is not None:
                     try:
-                        return pwd.getpwuid(uid).pw_name
+                        user = pwd.getpwuid(uid).pw_name
                     except KeyError:
-                        pass
-                return str(uid)
+                        user = str(uid)
+                else:
+                    user = str(uid)
+            swap_match = re.search(r"^VmSwap:\s+(\d+)\s+kB", status, re.MULTILINE)
+            if swap_match:
+                swap_bytes = int(swap_match.group(1)) * 1024
         except OSError:
             pass
-        return "?"
+        return user, swap_bytes
+
+    @staticmethod
+    def _read_process_control_group(process_dir: Path) -> str:
+        try:
+            groups = []
+            for line in (process_dir / "cgroup").read_text(encoding="utf-8", errors="replace").splitlines():
+                fields = line.split(":", 2)
+                if len(fields) == 3 and fields[2]:
+                    groups.append(fields[2])
+            return groups[0] if groups else "/"
+        except OSError:
+            return "/"
 
     def _read_processes(self, elapsed: float) -> list[ProcessInfo]:
         processes: list[ProcessInfo] = []
@@ -1015,13 +1039,14 @@ class LinuxMetricsCollector:
                 except OSError:
                     command = ""
                 read_bytes, write_bytes = self._read_process_io(process_dir)
+                process_user, swap_bytes = self._read_process_identity(process_dir)
                 processes.append(
                     ProcessInfo(
                         pid=pid,
                         ppid=int(parsed["ppid"]),
                         name=str(parsed["name"]),
                         command=command or f"[{parsed['name']}]",
-                        user=self._read_process_user(process_dir),
+                        user=process_user,
                         state=STATE_NAMES.get(str(parsed["state"]), str(parsed["state"])),
                         cpu_percent=min(cpu, 100.0),
                         memory_bytes=max(0, int(parsed["rss_pages"]) * self.page_size),
@@ -1029,6 +1054,10 @@ class LinuxMetricsCollector:
                         read_bytes=read_bytes,
                         write_bytes=write_bytes,
                         started_at=boot_time + int(parsed["start_ticks"]) / self.clock_ticks,
+                        swap_bytes=swap_bytes,
+                        user_cpu_seconds=int(parsed["user_ticks"]) / self.clock_ticks,
+                        system_cpu_seconds=int(parsed["system_ticks"]) / self.clock_ticks,
+                        control_group=self._read_process_control_group(process_dir),
                     )
                 )
             except (OSError, PermissionError, ProcessLookupError, ValueError, IndexError):
@@ -1240,9 +1269,21 @@ class LinuxMetricsCollector:
 
     @staticmethod
     def terminate_process(pid: int, force: bool = False) -> None:
+        LinuxMetricsCollector._signal_process(pid, signal.SIGKILL if force else signal.SIGTERM)
+
+    @staticmethod
+    def suspend_process(pid: int) -> None:
+        LinuxMetricsCollector._signal_process(pid, signal.SIGSTOP)
+
+    @staticmethod
+    def resume_process(pid: int) -> None:
+        LinuxMetricsCollector._signal_process(pid, signal.SIGCONT)
+
+    @staticmethod
+    def _signal_process(pid: int, process_signal: signal.Signals) -> None:
         if pid in (0, 1, os.getpid()):
             raise PermissionError("This process is protected by TMOG Linux.")
-        os.kill(pid, signal.SIGKILL if force else signal.SIGTERM)
+        os.kill(pid, process_signal)
 
     def system_information(self) -> list[tuple[str, str]]:
         release: dict[str, str] = {}

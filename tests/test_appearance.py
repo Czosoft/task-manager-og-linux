@@ -7,6 +7,7 @@ from tmog_linux.app import (
     RESOURCE_GRAPH_MAXIMA,
     SUMMARY_DEFAULT_WINDOW_HEIGHT,
     SUMMARY_VIEWPORT_MARGIN,
+    clamped_scroll_value,
     graph_fraction,
     graph_maximum,
     load_cpu_section_preferences,
@@ -41,6 +42,11 @@ class AppearancePreferenceTests(unittest.TestCase):
         self.assertEqual(summary_height_adjustment(662.0, 593.0), 79)
         self.assertEqual(summary_height_adjustment(662.0, 672.0), 0)
         self.assertEqual(summary_height_adjustment(692.0, 692.0), 0)
+
+    def test_process_scroll_restoration_is_clamped_to_visible_range(self):
+        self.assertEqual(clamped_scroll_value(420.0, 0.0, 1000.0, 300.0), 420.0)
+        self.assertEqual(clamped_scroll_value(900.0, 0.0, 1000.0, 300.0), 700.0)
+        self.assertEqual(clamped_scroll_value(-20.0, 0.0, 1000.0, 300.0), 0.0)
 
     def test_theme_preference_round_trip(self):
         with TemporaryDirectory() as directory:

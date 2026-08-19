@@ -149,7 +149,9 @@ Linux 目前没有覆盖所有 NPU 的统一利用率接口。页面会区分“
 
 ### 10. Processes 四种视图
 
-Processes 工具栏在四种模式中共享搜索、计数、Follow selection、End process 和 Force stop。表格可按 PID、名称、用户、状态、CPU、内存、线程、I/O 或启动时间排序；Settings 还能切换 CPU 百分比文字与压力条。
+Processes 工具栏在四种模式中共享搜索、计数、Follow selection、End process 和 Force stop。表格可按 PID、名称、用户、状态、CPU、内存、线程、I/O 或启动时间升降序排列，并会在每秒刷新时保留排序、选中进程和滚动位置；Settings 还能切换 CPU 百分比文字与压力条。
+
+右键菜单提供 End process、Force stop、Pause process、Resume process 和 Details。结束与强制停止操作继续显示确认对话框；暂停与继续分别发送 Linux `SIGSTOP` 和 `SIGCONT`。PID 0、PID 1 以及 TMOG 自身受到保护，普通用户也不能绕过 Linux 原有的进程权限。详情页显示父 PID、Swap、累计读写、用户/内核 CPU 时间、命令行和 control group。
 
 #### All processes
 

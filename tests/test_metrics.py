@@ -1,6 +1,8 @@
 import unittest
+import signal
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import call, patch
 
 from tmog_linux.metrics import (
     LinuxMetricsCollector,
@@ -75,6 +77,8 @@ class ParserTests(unittest.TestCase):
         parsed = parse_process_stat(f"42 (name with space) {' '.join(fields)}")
         self.assertEqual(parsed["pid"], 42)
         self.assertEqual(parsed["name"], "name with space")
+        self.assertEqual(parsed["user_ticks"], 10)
+        self.assertEqual(parsed["system_ticks"], 5)
         self.assertEqual(parsed["cpu_ticks"], 15)
         self.assertEqual(parsed["threads"], 7)
         self.assertEqual(parsed["start_ticks"], 100)
@@ -83,6 +87,44 @@ class ParserTests(unittest.TestCase):
     def test_byte_formatting(self):
         self.assertEqual(format_bytes(1024), "1.0 KB")
         self.assertEqual(format_bytes(1024 * 1024, rate=True), "1.0 MB/s")
+
+    def test_process_control_signals_and_protected_pids(self):
+        with patch("tmog_linux.metrics.os.kill") as kill:
+            LinuxMetricsCollector.terminate_process(4242)
+            LinuxMetricsCollector.terminate_process(4242, force=True)
+            LinuxMetricsCollector.suspend_process(4242)
+            LinuxMetricsCollector.resume_process(4242)
+            self.assertEqual(
+                kill.call_args_list,
+                [
+                    call(4242, signal.SIGTERM),
+                    call(4242, signal.SIGKILL),
+                    call(4242, signal.SIGSTOP),
+                    call(4242, signal.SIGCONT),
+                ],
+            )
+
+        with self.assertRaises(PermissionError):
+            LinuxMetricsCollector.suspend_process(1)
+
+    def test_process_identity_swap_and_control_group(self):
+        with TemporaryDirectory() as directory:
+            process_dir = Path(directory) / "4242"
+            process_dir.mkdir()
+            (process_dir / "status").write_text(
+                "Name:\ttest\nUid:\t999999\t999999\t999999\t999999\nVmSwap:\t2048 kB\n"
+            )
+            (process_dir / "cgroup").write_text("0::/user.slice/user-1000.slice/app.scope\n")
+            collector = object.__new__(LinuxMetricsCollector)
+
+            user, swap_bytes = collector._read_process_identity(process_dir)
+
+            self.assertEqual(user, "999999")
+            self.assertEqual(swap_bytes, 2 * 1024 * 1024)
+            self.assertEqual(
+                collector._read_process_control_group(process_dir),
+                "/user.slice/user-1000.slice/app.scope",
+            )
 
     def test_thermal_reader_preserves_individual_hwmon_sensors(self):
         with TemporaryDirectory() as directory:

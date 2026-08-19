@@ -340,6 +340,10 @@ def summary_height_adjustment(content_height: float, viewport_height: float) -> 
     return math.ceil(overflow + SUMMARY_VIEWPORT_MARGIN)
 
 
+def clamped_scroll_value(value: float, lower: float, upper: float, page_size: float) -> float:
+    return min(max(value, lower), max(lower, upper - page_size))
+
+
 class HistoryGraph(Gtk.DrawingArea):
     def __init__(self, color: str, max_points: int = 60, fixed_max: float | None = 100.0) -> None:
         super().__init__()
@@ -1522,13 +1526,15 @@ class TmogWindow(Gtk.Window):
         self.follow_selection = Gtk.CheckButton(label="Follow selection")
         self.follow_selection.set_active(True)
         toolbar.pack_start(self.follow_selection, False, False, 0)
-        end_button = Gtk.Button(label="End process")
-        end_button.connect("clicked", lambda _button: self._confirm_process_action(False))
-        toolbar.pack_start(end_button, False, False, 0)
-        kill_button = Gtk.Button(label="Force stop")
-        kill_button.get_style_context().add_class("danger-button")
-        kill_button.connect("clicked", lambda _button: self._confirm_process_action(True))
-        toolbar.pack_start(kill_button, False, False, 0)
+        self.process_end_button = Gtk.Button(label="End process")
+        self.process_end_button.set_sensitive(False)
+        self.process_end_button.connect("clicked", lambda _button: self._confirm_process_action(False))
+        toolbar.pack_start(self.process_end_button, False, False, 0)
+        self.process_kill_button = Gtk.Button(label="Force stop")
+        self.process_kill_button.set_sensitive(False)
+        self.process_kill_button.get_style_context().add_class("danger-button")
+        self.process_kill_button.connect("clicked", lambda _button: self._confirm_process_action(True))
+        toolbar.pack_start(self.process_kill_button, False, False, 0)
         content.pack_start(toolbar, False, False, 0)
 
         self.process_store = Gtk.ListStore(
@@ -1544,12 +1550,21 @@ class TmogWindow(Gtk.Window):
             str,
             str,
             object,
+            int,
         )
         self.process_filter = self.process_store.filter_new()
         self.process_filter.set_visible_func(self._process_visible)
-        self.process_view = Gtk.TreeView(model=self.process_filter)
+        self._process_sort_preference = (4, Gtk.SortType.DESCENDING)
+        self._changing_process_sort = False
+        self.process_sort = Gtk.TreeModelSort(model=self.process_filter)
+        self.process_sort.set_sort_column_id(*self._process_sort_preference)
+        self.process_sort.connect("sort-column-changed", self._process_sort_changed)
+        self.process_view = Gtk.TreeView(model=self.process_sort)
         self.process_view.set_rules_hint(True)
         self.process_view.connect("row-activated", self._show_process_details)
+        self.process_view.connect("button-press-event", self._on_process_button_press)
+        self.process_view.connect("popup-menu", self._on_process_popup_menu)
+        self.process_view.get_selection().connect("changed", self._process_selection_changed)
         add_text_column(self.process_view, "PID", 0, width=75)
         add_text_column(self.process_view, "Name", 1, expand=True)
         add_text_column(self.process_view, "User", 2, width=110)
@@ -2308,9 +2323,30 @@ class TmogWindow(Gtk.Window):
         return query in searchable
 
     def _process_view_changed(self, _combo: Gtk.ComboBoxText) -> None:
+        tree_mode = (self.process_view_combo.get_active_id() or "all") == "tree"
+        self._changing_process_sort = True
+        try:
+            for column in self.process_view.get_columns():
+                column.set_clickable(not tree_mode)
+            if tree_mode:
+                self.process_sort.set_sort_column_id(
+                    12,
+                    Gtk.SortType.ASCENDING,
+                )
+            else:
+                self.process_sort.set_sort_column_id(*self._process_sort_preference)
+        finally:
+            self._changing_process_sort = False
         if self.snapshot:
             self._reset_process_scroll = True
             self._render_processes(self.snapshot.processes)
+
+    def _process_sort_changed(self, model: Gtk.TreeModelSort) -> None:
+        if self._changing_process_sort:
+            return
+        sort_column, sort_order = model.get_sort_column_id()
+        if sort_column >= 0:
+            self._process_sort_preference = (sort_column, sort_order)
 
     def _selected_process(self) -> ProcessInfo | None:
         model, tree_iter = self.process_view.get_selection().get_selected()
@@ -2357,11 +2393,13 @@ class TmogWindow(Gtk.Window):
     def _render_processes(self, processes: list[ProcessInfo]) -> None:
         selected = self._selected_process() if self.follow_selection.get_active() else None
         selected_pid = selected.pid if selected else None
+        adjustment = self.process_scroller.get_vadjustment()
+        previous_scroll = adjustment.get_value()
         self.process_store.clear()
         selected_path = None
         rows = self._ordered_processes(processes)
         tree_mode = (self.process_view_combo.get_active_id() or "all") == "tree"
-        for process, depth in rows:
+        for sequence, (process, depth) in enumerate(rows):
             tree_iter = self.process_store.append(
                 (
                     process.pid,
@@ -2376,6 +2414,7 @@ class TmogWindow(Gtk.Window):
                     datetime.fromtimestamp(process.started_at).strftime("%Y-%m-%d %H:%M"),
                     process.command,
                     process,
+                    sequence,
                 )
             )
             if process.pid == selected_pid:
@@ -2391,10 +2430,13 @@ class TmogWindow(Gtk.Window):
         if selected_path is not None:
             filtered_path = self.process_filter.convert_child_path_to_path(selected_path)
             if filtered_path:
-                self.process_view.get_selection().select_path(filtered_path)
-                self.process_view.scroll_to_cell(filtered_path, None, True, 0.5, 0.0)
-        elif getattr(self, "_reset_process_scroll", False):
+                sorted_path = self.process_sort.convert_child_path_to_path(filtered_path)
+                if sorted_path:
+                    self.process_view.get_selection().select_path(sorted_path)
+        if getattr(self, "_reset_process_scroll", False):
             GLib.idle_add(self._scroll_process_view_to_top)
+        else:
+            GLib.idle_add(self._restore_process_scroll, previous_scroll)
         self._reset_process_scroll = False
         self._last_process_render = time.monotonic()
 
@@ -2403,19 +2445,105 @@ class TmogWindow(Gtk.Window):
         adjustment.set_value(adjustment.get_lower())
         return GLib.SOURCE_REMOVE
 
-    def _show_process_details(self, view: Gtk.TreeView, path: Gtk.TreePath, _column: Gtk.TreeViewColumn) -> None:
+    def _restore_process_scroll(self, value: float) -> bool:
+        adjustment = self.process_scroller.get_vadjustment()
+        adjustment.set_value(
+            clamped_scroll_value(
+                value,
+                adjustment.get_lower(),
+                adjustment.get_upper(),
+                adjustment.get_page_size(),
+            )
+        )
+        return GLib.SOURCE_REMOVE
+
+    def _process_selection_changed(self, selection: Gtk.TreeSelection) -> None:
+        has_selection = selection.count_selected_rows() > 0
+        self.process_end_button.set_sensitive(has_selection)
+        self.process_kill_button.set_sensitive(has_selection)
+
+    def _on_process_button_press(self, view: Gtk.TreeView, event: Gdk.EventButton) -> bool:
+        if event.button != Gdk.BUTTON_SECONDARY or event.type != Gdk.EventType.BUTTON_PRESS:
+            return False
+        target = view.get_path_at_pos(int(event.x), int(event.y))
+        if target is None:
+            return False
+        path, _column, _cell_x, _cell_y = target
+        view.grab_focus()
+        view.get_selection().select_path(path)
+        return self._popup_process_menu(event)
+
+    def _on_process_popup_menu(self, _view: Gtk.TreeView) -> bool:
+        return self._popup_process_menu()
+
+    def _popup_process_menu(self, event: Gdk.EventButton | None = None) -> bool:
+        process = self._selected_process()
+        if process is None:
+            return False
+
+        menu = self._build_process_menu(process)
+        if event is not None:
+            menu.popup_at_pointer(event)
+        else:
+            menu.popup_at_widget(
+                self.process_view,
+                Gdk.Gravity.CENTER,
+                Gdk.Gravity.CENTER,
+                None,
+            )
+        return True
+
+    def _build_process_menu(self, process: ProcessInfo) -> Gtk.Menu:
+        menu = Gtk.Menu()
+        end_item = Gtk.MenuItem(label="End process")
+        end_item.connect("activate", lambda _item: self._confirm_process_action(False, process))
+        menu.append(end_item)
+        kill_item = Gtk.MenuItem(label="Force stop")
+        kill_item.connect("activate", lambda _item: self._confirm_process_action(True, process))
+        menu.append(kill_item)
+        menu.append(Gtk.SeparatorMenuItem())
+
+        stopped = process.state in ("Stopped", "Tracing")
+        pause_item = Gtk.MenuItem(label="Pause process")
+        pause_item.set_sensitive(not stopped)
+        pause_item.connect("activate", lambda _item: self._control_process("pause", process))
+        menu.append(pause_item)
+        resume_item = Gtk.MenuItem(label="Resume process")
+        resume_item.set_sensitive(stopped)
+        resume_item.connect("activate", lambda _item: self._control_process("resume", process))
+        menu.append(resume_item)
+        menu.append(Gtk.SeparatorMenuItem())
+
+        details_item = Gtk.MenuItem(label="Details")
+        details_item.connect("activate", lambda _item: self._open_process_details(process))
+        menu.append(details_item)
+        menu.show_all()
+        self._process_context_menu = menu
+        return menu
+
+    def _show_process_details(
+        self,
+        view: Gtk.TreeView,
+        path: Gtk.TreePath,
+        _column: Gtk.TreeViewColumn | None,
+    ) -> None:
         model = view.get_model()
         process = model.get_value(model.get_iter(path), 11)
+        self._open_process_details(process)
+
+    def _open_process_details(self, process: ProcessInfo) -> None:
         dialog = Gtk.Dialog(title=f"{process.name}  /  PID {process.pid}", transient_for=self, modal=True)
         dialog.add_button("Close", Gtk.ResponseType.CLOSE)
-        dialog.set_default_size(640, 430)
+        dialog.set_default_size(680, 520)
         body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
         body.set_border_width(16)
         details = DetailGrid(
             [
                 ("pid", "Process ID"), ("ppid", "Parent ID"), ("user", "User"), ("state", "State"),
                 ("cpu", "CPU"), ("memory", "Resident memory"), ("threads", "Threads"), ("started", "Started"),
-                ("read", "Read I/O"), ("write", "Write I/O"),
+                ("swap", "Swap"), ("read", "Total read I/O"), ("write", "Total write I/O"),
+                ("user_cpu", "User CPU time"), ("system_cpu", "Kernel CPU time"),
+                ("cgroup", "Control group"),
             ],
             columns=2,
         )
@@ -2428,8 +2556,12 @@ class TmogWindow(Gtk.Window):
             "memory": format_bytes(process.memory_bytes),
             "threads": str(process.threads),
             "started": datetime.fromtimestamp(process.started_at).strftime("%Y-%m-%d %H:%M:%S"),
+            "swap": format_bytes(process.swap_bytes),
             "read": format_bytes(process.read_bytes),
             "write": format_bytes(process.write_bytes),
+            "user_cpu": f"{process.user_cpu_seconds:.2f} s",
+            "system_cpu": f"{process.system_cpu_seconds:.2f} s",
+            "cgroup": process.control_group,
         })
         body.pack_start(details, False, False, 0)
         command_title = Gtk.Label(label="Command", xalign=0)
@@ -2445,8 +2577,8 @@ class TmogWindow(Gtk.Window):
         dialog.run()
         dialog.destroy()
 
-    def _confirm_process_action(self, force: bool) -> None:
-        process = self._selected_process()
+    def _confirm_process_action(self, force: bool, process: ProcessInfo | None = None) -> None:
+        process = process or self._selected_process()
         if process is None:
             self._message("Select a process first", "Choose a row in the process list before using this action.")
             return
@@ -2469,6 +2601,22 @@ class TmogWindow(Gtk.Window):
             return
         try:
             self.collector.terminate_process(process.pid, force)
+        except (PermissionError, ProcessLookupError, OSError) as error:
+            self._message("Process action failed", str(error), Gtk.MessageType.ERROR)
+        self.request_update()
+
+    def _control_process(self, action: str, process: ProcessInfo | None = None) -> None:
+        process = process or self._selected_process()
+        if process is None:
+            self._message("Select a process first", "Choose a row in the process list before using this action.")
+            return
+        try:
+            if action == "pause":
+                self.collector.suspend_process(process.pid)
+            elif action == "resume":
+                self.collector.resume_process(process.pid)
+            else:
+                raise ValueError(f"Unsupported process action: {action}")
         except (PermissionError, ProcessLookupError, OSError) as error:
             self._message("Process action failed", str(error), Gtk.MessageType.ERROR)
         self.request_update()
