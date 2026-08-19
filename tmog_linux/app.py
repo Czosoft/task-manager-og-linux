@@ -289,6 +289,12 @@ def graph_maximum(values, fixed_max: float | None) -> float:
     return max(1.0, max(values, default=0.0) * 1.15)
 
 
+def graph_fraction(value: float, maximum: float) -> float:
+    if maximum <= 0:
+        return 0.0
+    return max(0.0, min(1.0, value / maximum))
+
+
 class HistoryGraph(Gtk.DrawingArea):
     def __init__(self, color: str, max_points: int = 60, fixed_max: float | None = 100.0) -> None:
         super().__init__()
@@ -321,7 +327,7 @@ class HistoryGraph(Gtk.DrawingArea):
         context.set_line_width(width)
         for index, value in enumerate(points):
             x = w - (len(points) - 1 - index) * step
-            y = h - min(1.0, value / maximum) * h
+            y = h - graph_fraction(value, maximum) * h
             context.move_to(x, y) if index == 0 else context.line_to(x, y)
         context.stroke()
 
@@ -345,6 +351,145 @@ class HistoryGraph(Gtk.DrawingArea):
         maximum = graph_maximum(observed, self.fixed_max)
         self._line(context, self.secondary, self.secondary_color, 1.2, maximum, width, height)
         self._line(context, self.primary, self.color, 1.8, maximum, width, height)
+        return False
+
+
+class DualAxisHistoryGraph(Gtk.DrawingArea):
+    def __init__(
+        self,
+        primary_label: str,
+        secondary_label: str,
+        primary_max: float = 100.0,
+        secondary_max: float = 110.0,
+        max_points: int = 60,
+    ) -> None:
+        super().__init__()
+        self.primary_label = primary_label
+        self.secondary_label = secondary_label
+        self.primary_max = primary_max
+        self.secondary_max = secondary_max
+        self.primary_color = COLORS["green"]
+        self.secondary_color = COLORS["orange"]
+        self.primary: deque[float] = deque(maxlen=max_points)
+        self.secondary: deque[float] = deque(maxlen=max_points)
+        self.set_size_request(360, 245)
+        self.get_style_context().add_class("history-graph")
+        self.connect("draw", self._draw)
+
+    def add(self, primary: float, secondary: float | None = None) -> None:
+        self.primary.append(max(0.0, primary))
+        if secondary is not None:
+            self.secondary.append(max(0.0, secondary))
+        self.queue_draw()
+
+    def clear(self) -> None:
+        self.primary.clear()
+        self.secondary.clear()
+        self.queue_draw()
+
+    @staticmethod
+    def _text_width(context, text: str) -> float:
+        extents = context.text_extents(text)
+        return extents.width if hasattr(extents, "width") else extents[2]
+
+    def _line(
+        self,
+        context,
+        values: deque[float],
+        color,
+        maximum: float,
+        x: float,
+        y: float,
+        width: float,
+        height: float,
+    ) -> None:
+        if not values:
+            return
+        points = list(values)
+        step = width / max(1, values.maxlen - 1)
+        context.set_source_rgba(*rgba(color, 0.96))
+        context.set_line_width(1.8)
+        for index, value in enumerate(points):
+            point_x = x + width - (len(points) - 1 - index) * step
+            point_y = y + height - graph_fraction(value, maximum) * height
+            context.move_to(point_x, point_y) if index == 0 else context.line_to(point_x, point_y)
+        context.stroke()
+
+    def _draw(self, _widget, context) -> bool:
+        allocation = self.get_allocation()
+        width, height = allocation.width, allocation.height
+        context.set_source_rgb(*style_rgb(self, background=True))
+        context.paint()
+
+        left, right, top, bottom = 42.0, 47.0, 31.0, 10.0
+        plot_width = max(1.0, width - left - right)
+        plot_height = max(1.0, height - top - bottom)
+
+        context.select_font_face("Ubuntu", 0, 0)
+        context.set_font_size(9)
+        context.set_source_rgba(*rgba(self.primary_color, 0.95))
+        context.rectangle(left, 8, 13, 2)
+        context.fill()
+        context.move_to(left + 18, 13)
+        context.show_text(self.primary_label)
+
+        primary_legend_width = self._text_width(context, self.primary_label)
+        secondary_x = left + 34 + primary_legend_width
+        context.set_source_rgba(*rgba(self.secondary_color, 0.95))
+        context.rectangle(secondary_x, 8, 13, 2)
+        context.fill()
+        context.move_to(secondary_x + 18, 13)
+        context.show_text(self.secondary_label)
+
+        context.set_line_width(1)
+        context.set_source_rgba(*rgba(self.primary_color, theme_alpha(self, 0.13, 0.22)))
+        for index in range(9):
+            x = left + index * plot_width / 8
+            context.move_to(x, top)
+            context.line_to(x, top + plot_height)
+        for index in range(5):
+            y = top + index * plot_height / 4
+            context.move_to(left, y)
+            context.line_to(left + plot_width, y)
+        context.stroke()
+
+        context.set_source_rgba(*rgba(self.primary_color, theme_alpha(self, 0.5, 0.72)))
+        context.rectangle(left + 0.5, top + 0.5, max(1.0, plot_width - 1), max(1.0, plot_height - 1))
+        context.stroke()
+
+        for fraction, primary_text, secondary_text in (
+            (0.0, "100%", "110 C"),
+            (0.5, "50%", "55 C"),
+            (1.0, "0%", "0 C"),
+        ):
+            label_y = top + fraction * plot_height + (9 if fraction == 0.0 else 3 if fraction == 0.5 else -2)
+            context.set_source_rgba(*rgba(self.primary_color, 0.9))
+            context.move_to(left - 6 - self._text_width(context, primary_text), label_y)
+            context.show_text(primary_text)
+            context.set_source_rgba(*rgba(self.secondary_color, 0.9))
+            context.move_to(left + plot_width + 6, label_y)
+            context.show_text(secondary_text)
+
+        self._line(
+            context,
+            self.secondary,
+            self.secondary_color,
+            self.secondary_max,
+            left,
+            top,
+            plot_width,
+            plot_height,
+        )
+        self._line(
+            context,
+            self.primary,
+            self.primary_color,
+            self.primary_max,
+            left,
+            top,
+            plot_width,
+            plot_height,
+        )
         return False
 
 
@@ -933,6 +1078,8 @@ class TmogWindow(Gtk.Window):
     def _build_summary_page(self) -> None:
         page, content = self._page_box("Summary", "SYSTEM SUMMARY  /  LIVE")
         grid = Gtk.Grid(column_spacing=10, row_spacing=10)
+        grid.set_vexpand(True)
+        grid.set_valign(Gtk.Align.FILL)
         content.pack_start(scrollable(grid), True, True, 0)
 
         meters = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=3)
@@ -943,7 +1090,8 @@ class TmogWindow(Gtk.Window):
         for meter in (self.cpu_meter, self.clock_meter, self.temp_meter, self.gpu_meter):
             meters.pack_start(meter, True, True, 0)
         meter_card = card("Live meters", meters)
-        meter_card.set_size_request(250, 245)
+        meter_card.set_size_request(250, 320)
+        meter_card.set_vexpand(True)
         grid.attach(meter_card, 0, 0, 1, 1)
 
         cpu_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=7)
@@ -956,7 +1104,7 @@ class TmogWindow(Gtk.Window):
         cpu_header.pack_start(cpu_title, True, True, 0)
         cpu_header.pack_end(self.cpu_value, False, False, 0)
         cpu_box.pack_start(cpu_header, False, False, 0)
-        self.summary_cpu_graph = HistoryGraph("green")
+        self.summary_cpu_graph = DualAxisHistoryGraph("Utilization", "Temperature")
         cpu_box.pack_start(self.summary_cpu_graph, True, True, 0)
         self.cpu_detail = Gtk.Label(label="Waiting for data", xalign=0)
         self.cpu_detail.get_style_context().add_class("muted")
@@ -965,8 +1113,9 @@ class TmogWindow(Gtk.Window):
         cpu_card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         cpu_card.get_style_context().add_class("card")
         cpu_card.pack_start(cpu_box, True, True, 0)
-        cpu_card.set_size_request(390, 245)
+        cpu_card.set_size_request(390, 320)
         cpu_card.set_hexpand(True)
+        cpu_card.set_vexpand(True)
         grid.attach(cpu_card, 1, 0, 1, 1)
 
         self.top_store = Gtk.ListStore(int, str, float, str)
@@ -977,9 +1126,10 @@ class TmogWindow(Gtk.Window):
         self._add_formatted_column(top_view, "CPU", 2, lambda value: f"{value:.1f}%", 65)
         add_text_column(top_view, "Memory", 3, width=85)
         top_scroll = scrollable(top_view)
-        top_scroll.set_size_request(315, 205)
+        top_scroll.set_size_request(315, 280)
         top_card = card("Top CPU processes", top_scroll, "green")
         top_card.set_size_request(315, -1)
+        top_card.set_vexpand(True)
         grid.attach(top_card, 2, 0, 1, 1)
 
         memory_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
@@ -1535,11 +1685,17 @@ class TmogWindow(Gtk.Window):
         gpu_peak = max(gpu_usages) if gpu_usages else None
         self.gpu_meter.set_value(gpu_peak, "--" if gpu_peak is None else f"{gpu_peak:.0f}%")
         self.cpu_value.set_text(f"{cpu:.1f}%")
+        temperature_detail = (
+            f"Hotspot {observed_temperature:.1f} C"
+            if observed_temperature is not None
+            else "Temperature N/A"
+        )
         self.cpu_detail.set_text(
             f"{len(snapshot.per_cpu_percent)} logical processors  •  "
-            f"{(snapshot.cpu_mhz or 0) / 1000:.2f} GHz  •  Kernel {snapshot.kernel_percent:.1f}%"
+            f"{(snapshot.cpu_mhz or 0) / 1000:.2f} GHz  •  {temperature_detail}  •  "
+            f"Kernel {snapshot.kernel_percent:.1f}%"
         )
-        self.summary_cpu_graph.add(cpu, snapshot.kernel_percent)
+        self.summary_cpu_graph.add(cpu, observed_temperature)
         self.memory_value.set_text(f"{format_bytes(snapshot.memory_used)} / {format_bytes(snapshot.memory_total)}")
         self.memory_detail.set_text(
             f"Available {format_bytes(snapshot.memory_available)}  •  Cached {format_bytes(snapshot.memory_cached)}  •  "

@@ -52,7 +52,7 @@
 Summary 是启动后的全局状态页，适合快速判断当前瓶颈：
 
 - **Live meters**：并排显示 CPU 利用率、CPU 频率、热点温度和 GPU 利用率。
-- **CPU Overview**：60 秒总体 CPU 与 Kernel 时间历史，右上角显示当前利用率。
+- **CPU Overview**：加高的 60 秒双轴图；左轴显示 `0-100%` CPU 利用率，右轴显示 `0-110 C` 热点温度。
 - **Top CPU processes**：列出当前 CPU 活动最高的进程及其内存占用。
 - **Memory utilization**：显示使用量、总量、可用、缓存与 Swap。
 - **Disks / Network / Energy & Thermals**：底部保留磁盘、网络、功耗和温度的快速状态条。
@@ -60,6 +60,8 @@ Summary 是启动后的全局状态页，适合快速判断当前瓶颈：
 <a href="screenshots/summary-light-latest.png"><img width="100%" src="screenshots/summary-light-latest.png" alt="Summary page with live CPU, memory, disk, network, power and thermal metrics"></a>
 
 深色和浅色模式使用同一套布局与指标；标题栏按钮、侧栏、表格、卡片、滚动条和自绘图表会一起切换，而不是只替换窗口背景。
+
+第一行按照 TMOG 的信息密度加高，Live meters 的分段柱、CPU 双轴历史和 Top CPU processes 会使用相同高度。CPU 图内绿色与橙色曲线分别使用独立纵轴，底部详情同时保留逻辑处理器、频率、热点温度和 Kernel 百分比。
 
 <a href="screenshots/summary-dark-latest.png"><img width="100%" src="screenshots/summary-dark-latest.png" alt="Summary page in dark mode"></a>
 
