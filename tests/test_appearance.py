@@ -14,6 +14,7 @@ from tmog_linux.app import (
     load_theme_preference,
     save_cpu_section_preferences,
     save_theme_preference,
+    service_status_visual,
     summary_height_adjustment,
 )
 
@@ -47,6 +48,14 @@ class AppearancePreferenceTests(unittest.TestCase):
         self.assertEqual(clamped_scroll_value(420.0, 0.0, 1000.0, 300.0), 420.0)
         self.assertEqual(clamped_scroll_value(900.0, 0.0, 1000.0, 300.0), 700.0)
         self.assertEqual(clamped_scroll_value(-20.0, 0.0, 1000.0, 300.0), 0.0)
+
+    def test_service_status_visuals_distinguish_tree_expanders(self):
+        self.assertEqual(service_status_visual("active", "running", "service"), ("●", "#2da44e"))
+        self.assertEqual(service_status_visual("active", "exited", "service"), ("◆", "#2da44e"))
+        self.assertEqual(service_status_visual("activating", "start", "service"), ("◆", "#d29922"))
+        self.assertEqual(service_status_visual("failed", "failed", "service"), ("!", "#e5484d"))
+        self.assertEqual(service_status_visual("inactive", "dead", "service"), ("■", "#8b949e"))
+        self.assertEqual(service_status_visual("process", "Sleeping", "process"), ("●", "#3b82f6"))
 
     def test_theme_preference_round_trip(self):
         with TemporaryDirectory() as directory:

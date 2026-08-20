@@ -380,6 +380,18 @@ def clamped_scroll_value(value: float, lower: float, upper: float, page_size: fl
     return min(max(value, lower), max(lower, upper - page_size))
 
 
+def service_status_visual(active: str, state: str, row_kind: str) -> tuple[str, str]:
+    if row_kind == "process":
+        return "●", "#3b82f6"
+    if active == "failed" or state == "failed":
+        return "!", "#e5484d"
+    if active in {"activating", "deactivating", "reloading"}:
+        return "◆", "#d29922"
+    if active == "active":
+        return ("◆" if state == "exited" else "●"), "#2da44e"
+    return "■", "#8b949e"
+
+
 class HistoryGraph(Gtk.DrawingArea):
     def __init__(self, color: str, max_points: int = 60, fixed_max: float | None = 100.0) -> None:
         super().__init__()
@@ -1954,13 +1966,35 @@ class TmogWindow(Gtk.Window):
         self.service_view.get_selection().connect("changed", self._service_selection_changed)
 
         icon_renderer = Gtk.CellRendererPixbuf()
+        status_renderer = Gtk.CellRendererText()
+        status_renderer.set_property("weight", Pango.Weight.BOLD)
+        status_renderer.set_property("xpad", 3)
         text_renderer = Gtk.CellRendererText()
         text_renderer.set_property("ellipsize", Pango.EllipsizeMode.END)
         unit_column = Gtk.TreeViewColumn("Service / process")
         unit_column.pack_start(icon_renderer, False)
+        unit_column.pack_start(status_renderer, False)
         unit_column.pack_start(text_renderer, True)
-        unit_column.add_attribute(icon_renderer, "icon-name", 10)
         unit_column.add_attribute(text_renderer, "text", 0)
+
+        def render_service_status(_column, _cell, model, tree_iter, _data=None):
+            key = model.get_value(tree_iter, 9)
+            is_scope = key.startswith("scope:")
+            icon_renderer.set_property("visible", is_scope)
+            icon_renderer.set_property("icon-name", model.get_value(tree_iter, 10) if is_scope else None)
+            status_renderer.set_property("visible", not is_scope)
+            if is_scope:
+                return
+            row_kind = "process" if model.get_value(tree_iter, 8) is not None else "service"
+            glyph, color = service_status_visual(
+                model.get_value(tree_iter, 2),
+                model.get_value(tree_iter, 3),
+                row_kind,
+            )
+            status_renderer.set_property("text", glyph)
+            status_renderer.set_property("foreground", color)
+
+        unit_column.set_cell_data_func(status_renderer, render_service_status)
         unit_column.set_expand(True)
         unit_column.set_resizable(True)
         unit_column.set_sort_column_id(0)

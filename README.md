@@ -215,6 +215,7 @@ Machine identity 汇总发行版、Kernel、主机名、架构、处理器、物
 
 - 分别读取当前用户的 `systemctl --user` 与系统级 `systemctl`，按照 User services、System services、service unit、成员进程构成三层树。
 - service 行汇总其 cgroup 成员进程的 CPU 和常驻内存；展开 unit 后显示真实 PID、状态和命令，双击进程可以打开完整进程详情。
+- 展开三角只表示树层级；旁边使用独立彩色状态标记区分运行中、active/exited、状态切换中、失败、停止和成员进程，避免两个相似箭头挤在一起。
 - Service、PID、Active、State、CPU、Memory 和 Description 表头均支持升降序；User/System 作用域保持固定顺序，只在各自层级内排列 unit 与成员进程。
 - 可以按作用域、Active 或 Failed 筛选，并可搜索 unit、状态、描述和成员进程。服务 unit 通过显式刷新更新，进程资源仍随常规采样更新。
 - 支持 Start、Stop、Restart、Details 和右键菜单。用户服务使用当前用户权限；系统服务通过 systemd/polkit 授权，不调用 `sudo`，拒绝或取消授权会显示原始错误而不会报告成功。
