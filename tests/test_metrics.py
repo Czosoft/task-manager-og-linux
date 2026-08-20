@@ -1,6 +1,8 @@
 import unittest
 import signal
 import subprocess
+import threading
+import time
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import call, patch
@@ -143,6 +145,28 @@ class ParserTests(unittest.TestCase):
             rows,
             [{"index": "0", "name": "NVIDIA GeForce RTX 4070", "utilization.gpu": "37", "memory.used": "2048"}],
         )
+
+    def test_nvidia_smi_watchdog_disables_a_hung_provider(self):
+        release_query = threading.Event()
+        collector = object.__new__(LinuxMetricsCollector)
+        collector._nvidia_smi_path = "nvidia-smi"
+        collector._nvidia_smi_disabled = False
+        collector._nvidia_smi_watchdog_seconds = 0.02
+
+        def hung_query(*_args, **_kwargs):
+            release_query.wait(1.0)
+            return subprocess.CompletedProcess([], 0, stdout="", stderr="")
+
+        try:
+            with patch("tmog_linux.metrics.subprocess.run", side_effect=hung_query) as run:
+                started = time.monotonic()
+                self.assertEqual(collector._query_nvidia_smi(("index", "name")), [])
+                self.assertLess(time.monotonic() - started, 0.25)
+                self.assertTrue(collector._nvidia_smi_disabled)
+                self.assertEqual(collector._query_nvidia_smi(("index", "name")), [])
+                self.assertEqual(run.call_count, 1)
+        finally:
+            release_query.set()
 
     def test_process_stat_handles_spaces_in_name(self):
         fields = ["S", "1"] + ["0"] * 9 + ["10", "5"] + ["0"] * 4 + ["7", "0", "100", "0", "20"]

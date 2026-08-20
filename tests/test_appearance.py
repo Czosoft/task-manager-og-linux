@@ -5,8 +5,13 @@ from tempfile import TemporaryDirectory
 
 from tmog_linux.app import (
     RESOURCE_GRAPH_MAXIMA,
+    SIDEBAR_COMPACT_BREAKPOINT,
+    SIDEBAR_COMPACT_WIDTH,
+    SIDEBAR_FULL_WIDTH,
     SUMMARY_DEFAULT_WINDOW_HEIGHT,
     SUMMARY_VIEWPORT_MARGIN,
+    WINDOW_MIN_HEIGHT,
+    WINDOW_MIN_WIDTH,
     clamped_scroll_value,
     graph_fraction,
     graph_maximum,
@@ -43,6 +48,12 @@ class AppearancePreferenceTests(unittest.TestCase):
         self.assertEqual(summary_height_adjustment(662.0, 593.0), 79)
         self.assertEqual(summary_height_adjustment(662.0, 672.0), 0)
         self.assertEqual(summary_height_adjustment(692.0, 692.0), 0)
+
+    def test_compact_window_limits_preserve_the_regular_default(self):
+        self.assertEqual((WINDOW_MIN_WIDTH, WINDOW_MIN_HEIGHT), (500, 420))
+        self.assertEqual(SIDEBAR_COMPACT_WIDTH, 58)
+        self.assertEqual(SIDEBAR_FULL_WIDTH, 205)
+        self.assertGreater(SIDEBAR_COMPACT_BREAKPOINT, WINDOW_MIN_WIDTH)
 
     def test_process_scroll_restoration_is_clamped_to_visible_range(self):
         self.assertEqual(clamped_scroll_value(420.0, 0.0, 1000.0, 300.0), 420.0)

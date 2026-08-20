@@ -12,6 +12,7 @@ import shutil
 import socket
 import struct
 import subprocess
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -538,6 +539,8 @@ class LinuxMetricsCollector:
         )
         wsl_nvidia_smi = Path("/usr/lib/wsl/lib/nvidia-smi")
         self._nvidia_smi_path = shutil.which("nvidia-smi") or (str(wsl_nvidia_smi) if wsl_nvidia_smi.exists() else None)
+        self._nvidia_smi_disabled = False
+        self._nvidia_smi_watchdog_seconds = 2.0
         self.npu_name = self._read_npu_name()
 
     def _read(self, relative: str, default: str = "") -> str:
@@ -873,17 +876,40 @@ class LinuxMetricsCollector:
         return float(match.group(0)) if match else None
 
     def _query_nvidia_smi(self, fields: tuple[str, ...]) -> list[dict[str, str]]:
-        if not self._nvidia_smi_path:
+        if not self._nvidia_smi_path or getattr(self, "_nvidia_smi_disabled", False):
             return []
         command = [
             self._nvidia_smi_path,
             f"--query-gpu={','.join(fields)}",
             "--format=csv,noheader,nounits",
         ]
-        try:
-            result = subprocess.run(command, capture_output=True, text=True, timeout=1.5, check=False)
-        except (OSError, subprocess.SubprocessError):
+        result_holder: list[subprocess.CompletedProcess[str]] = []
+
+        def query() -> None:
+            try:
+                result_holder.append(
+                    subprocess.run(
+                        command,
+                        capture_output=True,
+                        text=True,
+                        timeout=1.5,
+                        check=False,
+                    )
+                )
+            except (OSError, subprocess.SubprocessError):
+                pass
+
+        worker = threading.Thread(target=query, daemon=True, name="tmog-nvidia-smi")
+        worker.start()
+        worker.join(getattr(self, "_nvidia_smi_watchdog_seconds", 2.0))
+        if worker.is_alive():
+            # Some WSL bridges hang while subprocess.run tries to reap a timed-out
+            # nvidia-smi child. Disable further queries so the GTK thread stays live.
+            self._nvidia_smi_disabled = True
             return []
+        if not result_holder:
+            return []
+        result = result_holder[0]
         return parse_nvidia_smi_csv(result.stdout, fields) if result.returncode == 0 else []
 
     def _read_nvidia_gpus(self) -> list[GpuSnapshot]:

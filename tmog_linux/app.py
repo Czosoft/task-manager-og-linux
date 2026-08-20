@@ -62,6 +62,12 @@ RESOURCE_GRAPH_MAXIMA = {
 }
 SUMMARY_DEFAULT_WINDOW_HEIGHT = 799
 SUMMARY_VIEWPORT_MARGIN = 10
+WINDOW_MIN_WIDTH = 500
+WINDOW_MIN_HEIGHT = 420
+SIDEBAR_COMPACT_WIDTH = 58
+SIDEBAR_FULL_WIDTH = 205
+SIDEBAR_COMPACT_BREAKPOINT = 760
+SIDEBAR_SHORT_BREAKPOINT = 520
 
 
 @dataclass(slots=True)
@@ -706,13 +712,15 @@ class ResourceRow(Gtk.RadioButton):
         self.get_style_context().add_class("resource-button")
         content = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         labels = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=1)
-        title_label = Gtk.Label(label=title, xalign=0)
-        title_label.get_style_context().add_class("resource-title")
-        title_label.get_style_context().add_class(color)
+        self.title_label = Gtk.Label(label=title, xalign=0)
+        self.title_label.set_ellipsize(Pango.EllipsizeMode.END)
+        self.title_label.set_tooltip_text(title)
+        self.title_label.get_style_context().add_class("resource-title")
+        self.title_label.get_style_context().add_class(color)
         self.detail_label = Gtk.Label(label="Waiting for data", xalign=0)
         self.detail_label.set_ellipsize(Pango.EllipsizeMode.END)
         self.detail_label.get_style_context().add_class("resource-detail")
-        labels.pack_start(title_label, False, False, 0)
+        labels.pack_start(self.title_label, False, False, 0)
         labels.pack_start(self.detail_label, False, False, 0)
         self.sparkline = Sparkline(color, points=60, fixed_max=fixed_max)
         content.pack_start(labels, True, True, 0)
@@ -723,6 +731,10 @@ class ResourceRow(Gtk.RadioButton):
         self.detail_label.set_text(detail)
         if graph_value is not None:
             self.sparkline.add(graph_value)
+
+    def set_compact(self, compact: bool) -> None:
+        self.detail_label.set_visible(not compact)
+        self.sparkline.set_visible(not compact)
 
 
 class DetailGrid(Gtk.Grid):
@@ -983,6 +995,15 @@ def scrollable(child: Gtk.Widget) -> Gtk.ScrolledWindow:
     return scroller
 
 
+def horizontally_scrollable(child: Gtk.Widget) -> Gtk.ScrolledWindow:
+    scroller = Gtk.ScrolledWindow()
+    scroller.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.NEVER)
+    scroller.set_overlay_scrolling(False)
+    scroller.set_shadow_type(Gtk.ShadowType.NONE)
+    scroller.add(child)
+    return scroller
+
+
 def add_text_column(view: Gtk.TreeView, title: str, model_index: int, *, expand: bool = False, width: int = 90) -> None:
     renderer = Gtk.CellRendererText()
     renderer.set_property("ellipsize", Pango.EllipsizeMode.END)
@@ -999,7 +1020,7 @@ class TmogWindow(Gtk.Window):
     def __init__(self) -> None:
         super().__init__(title="Task Manager OG // Linux")
         self.set_default_size(1240, SUMMARY_DEFAULT_WINDOW_HEIGHT)
-        self.set_size_request(900, 600)
+        self.set_size_request(WINDOW_MIN_WIDTH, WINDOW_MIN_HEIGHT)
         self.set_icon_name("utilities-system-monitor")
         self.collector = LinuxMetricsCollector()
         self.snapshot: SystemSnapshot | None = None
@@ -1013,7 +1034,10 @@ class TmogWindow(Gtk.Window):
         self._timer_id: int | None = None
         self._summary_default_fit_enabled = True
         self._summary_default_fit_passes = 0
+        self._sidebar_compact: bool | None = None
+        self._performance_selector_compact: bool | None = None
         self.nav_buttons: dict[str, Gtk.ToggleButton] = {}
+        self.nav_labels: list[Gtk.Label] = []
         self.process_cpu_bars_enabled = True
         self._services: list[ServiceInfo] = []
         self._service_action_in_progress = False
@@ -1060,6 +1084,8 @@ class TmogWindow(Gtk.Window):
         self.add(root)
         root.pack_start(self._build_sidebar(), False, False, 0)
         self.stack = Gtk.Stack(transition_type=Gtk.StackTransitionType.CROSSFADE, transition_duration=120)
+        self.stack.set_hhomogeneous(False)
+        self.stack.set_vhomogeneous(False)
         root.pack_start(self.stack, True, True, 0)
 
         self._build_summary_page()
@@ -1073,6 +1099,7 @@ class TmogWindow(Gtk.Window):
         self._build_settings_page()
         self.show_page("summary")
         self.connect("key-press-event", self._on_key_press)
+        self.connect("size-allocate", self._on_window_size_allocate)
         self.connect("destroy", Gtk.main_quit)
         self.show_all()
         GLib.idle_add(self._fit_summary_default_height)
@@ -1165,7 +1192,7 @@ class TmogWindow(Gtk.Window):
             monitor = display.get_monitor_at_window(gdk_window)
             if monitor is not None:
                 workarea = monitor.get_workarea()
-                target_height = min(target_height, max(600, workarea.height - 20))
+                target_height = min(target_height, max(WINDOW_MIN_HEIGHT, workarea.height - 20))
         if target_height <= height:
             return GLib.SOURCE_REMOVE
 
@@ -1176,12 +1203,17 @@ class TmogWindow(Gtk.Window):
 
     def _build_sidebar(self) -> Gtk.Box:
         sidebar = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        sidebar.set_size_request(205, -1)
+        self.sidebar = sidebar
+        sidebar.set_size_request(SIDEBAR_COMPACT_WIDTH, -1)
         sidebar.get_style_context().add_class("sidebar")
         brand = Gtk.Label(label="TMOG // LINUX", xalign=0)
+        self.sidebar_brand = brand
+        brand.set_ellipsize(Pango.EllipsizeMode.END)
         brand.get_style_context().add_class("brand")
         sidebar.pack_start(brand, False, False, 0)
         subtitle = Gtk.Label(label="NATIVE SYSTEM METRICS", xalign=0)
+        self.sidebar_subtitle = subtitle
+        subtitle.set_ellipsize(Pango.EllipsizeMode.END)
         subtitle.get_style_context().add_class("brand-subtitle")
         sidebar.pack_start(subtitle, False, False, 0)
         performance_icon = available_icon_name(
@@ -1213,20 +1245,49 @@ class TmogWindow(Gtk.Window):
         self.nav_buttons["settings"] = settings
         sidebar.pack_start(settings, False, False, 4)
         footer = Gtk.Label(label="LINUX PROVIDERS  •  BETA 06", xalign=0)
+        self.sidebar_footer = footer
+        footer.set_ellipsize(Pango.EllipsizeMode.END)
         footer.get_style_context().add_class("sidebar-footer")
         sidebar.pack_start(footer, False, False, 0)
         return sidebar
 
-    @staticmethod
-    def _nav_button(label: str, icon: str, group: Gtk.RadioButton | None = None) -> Gtk.RadioButton:
+    def _nav_button(self, label: str, icon: str, group: Gtk.RadioButton | None = None) -> Gtk.RadioButton:
         button = Gtk.RadioButton.new_from_widget(group) if group else Gtk.RadioButton.new(None)
         button.set_mode(False)
+        button.set_tooltip_text(label)
         button.get_style_context().add_class("nav-button")
         content = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
         content.pack_start(Gtk.Image.new_from_icon_name(icon, Gtk.IconSize.MENU), False, False, 0)
-        content.pack_start(Gtk.Label(label=label, xalign=0), True, True, 0)
+        nav_label = Gtk.Label(label=label, xalign=0)
+        nav_label.set_ellipsize(Pango.EllipsizeMode.END)
+        self.nav_labels.append(nav_label)
+        content.pack_start(nav_label, True, True, 0)
         button.add(content)
         return button
+
+    def _on_window_size_allocate(self, _window: Gtk.Window, allocation: Gdk.Rectangle) -> None:
+        compact = (
+            allocation.width < SIDEBAR_COMPACT_BREAKPOINT
+            or allocation.height < SIDEBAR_SHORT_BREAKPOINT
+        )
+        if compact != self._sidebar_compact:
+            self._sidebar_compact = compact
+            self.sidebar_brand.set_visible(not compact)
+            self.sidebar_subtitle.set_visible(not compact)
+            self.sidebar_footer.set_visible(not compact)
+            for label in self.nav_labels:
+                label.set_visible(not compact)
+            self.sidebar.queue_resize()
+
+        performance_compact = allocation.width < SIDEBAR_COMPACT_BREAKPOINT
+        if performance_compact != self._performance_selector_compact:
+            self._performance_selector_compact = performance_compact
+            self.performance_selector_scroll.set_size_request(
+                96 if performance_compact else 130,
+                -1,
+            )
+            for row in self.resource_rows.values():
+                row.set_compact(performance_compact)
 
     def _nav_toggled(self, button: Gtk.ToggleButton, name: str) -> None:
         if button.get_active():
@@ -1361,9 +1422,17 @@ class TmogWindow(Gtk.Window):
         body = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
         content.pack_start(body, True, True, 0)
         selector = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
-        selector.set_size_request(220, -1)
-        body.pack_start(selector, False, False, 0)
+        selector.set_size_request(130, -1)
+        selector_scroll = Gtk.ScrolledWindow()
+        selector_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        selector_scroll.set_overlay_scrolling(False)
+        selector_scroll.set_size_request(130, -1)
+        selector_scroll.add_with_viewport(selector)
+        self.performance_selector_scroll = selector_scroll
+        body.pack_start(selector_scroll, False, False, 0)
         self.performance_stack = Gtk.Stack(transition_type=Gtk.StackTransitionType.CROSSFADE)
+        self.performance_stack.set_hhomogeneous(False)
+        self.performance_stack.set_vhomogeneous(False)
         body.pack_start(self.performance_stack, True, True, 0)
         self.resource_rows: dict[str, ResourceRow] = {}
         self.perf_widgets: dict[str, dict[str, object]] = {}
@@ -1438,7 +1507,7 @@ class TmogWindow(Gtk.Window):
         fixed_max = 100.0 if name in ("cpu", "memory", "gpu", "disk") else 110.0 if name == "thermals" else None
         graph = HistoryGraph(color, fixed_max=fixed_max)
         graph_height = 175 if name in ("cpu", "network", "thermals") else 220
-        graph.set_size_request(520, graph_height)
+        graph.set_size_request(260, graph_height)
         graph_title = {
             "cpu": "Overall utilization / kernel time",
             "memory": "Memory utilization / pressure",
@@ -1490,7 +1559,7 @@ class TmogWindow(Gtk.Window):
             content.pack_start(self.cpu_logical_section, False, True, 0)
         elif name in ("disk", "network"):
             secondary_graph = HistoryGraph("green" if name == "disk" else "yellow", fixed_max=None)
-            secondary_graph.set_size_request(520, 110 if name == "network" else 160)
+            secondary_graph.set_size_request(260, 110 if name == "network" else 160)
             title_text = "Disk transfer rate / read and write" if name == "disk" else "Receive and send throughput"
             content.pack_start(card(title_text, secondary_graph, "green" if name == "disk" else "blue"), False, True, 0)
         elif name == "memory":
@@ -1588,7 +1657,7 @@ class TmogWindow(Gtk.Window):
             "sensor_flow": sensor_flow,
         }
         page_scroll = scrollable(content)
-        page_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        page_scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
         page_scroll.set_overlay_scrolling(False)
         page_scroll.get_style_context().add_class("stable-scroll")
         self.performance_stack.add_named(page_scroll, name)
@@ -1623,7 +1692,7 @@ class TmogWindow(Gtk.Window):
         self.application_kill_button.get_style_context().add_class("danger-button")
         self.application_kill_button.connect("clicked", lambda _button: self._confirm_application_action(True))
         toolbar.pack_start(self.application_kill_button, False, False, 0)
-        content.pack_start(toolbar, False, False, 0)
+        content.pack_start(horizontally_scrollable(toolbar), False, False, 0)
 
         self.application_store = Gtk.TreeStore(
             str,
@@ -1713,7 +1782,7 @@ class TmogWindow(Gtk.Window):
         self.process_kill_button.get_style_context().add_class("danger-button")
         self.process_kill_button.connect("clicked", lambda _button: self._confirm_process_action(True))
         toolbar.pack_start(self.process_kill_button, False, False, 0)
-        content.pack_start(toolbar, False, False, 0)
+        content.pack_start(horizontally_scrollable(toolbar), False, False, 0)
 
         self.process_store = Gtk.ListStore(
             int,
@@ -1872,7 +1941,7 @@ class TmogWindow(Gtk.Window):
         refresh = icon_button("view-refresh-symbolic", "Refresh startup entries")
         refresh.connect("clicked", lambda _button: self._refresh_startup_entries())
         toolbar.pack_start(refresh, False, False, 0)
-        content.pack_start(toolbar, False, False, 0)
+        content.pack_start(horizontally_scrollable(toolbar), False, False, 0)
 
         self.startup_store = Gtk.ListStore(str, str, str, str, GObject.TYPE_PYOBJECT)
         self.startup_view = Gtk.TreeView(model=self.startup_store)
@@ -1943,7 +2012,7 @@ class TmogWindow(Gtk.Window):
         refresh = icon_button("view-refresh-symbolic", "Refresh service units")
         refresh.connect("clicked", lambda _button: self._refresh_services())
         toolbar.pack_start(refresh, False, False, 0)
-        content.pack_start(toolbar, False, False, 0)
+        content.pack_start(horizontally_scrollable(toolbar), False, False, 0)
 
         self.service_store = Gtk.TreeStore(
             str,

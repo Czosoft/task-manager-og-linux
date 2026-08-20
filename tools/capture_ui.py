@@ -80,12 +80,14 @@ def main() -> int:
             raise SystemExit("TMOG_CAPTURE_THEME must be system, dark, or light")
         window._apply_theme(capture_theme)
     capture_size = os.environ.get("TMOG_CAPTURE_SIZE")
+    capture_dimensions: tuple[int, int] | None = None
     if capture_size:
         window._summary_default_fit_enabled = False
         try:
             width, height = (int(value) for value in capture_size.lower().split("x", 1))
         except ValueError as error:
             raise SystemExit("TMOG_CAPTURE_SIZE must use WIDTHxHEIGHT, for example 1920x1080") from error
+        capture_dimensions = (width, height)
         window.resize(width, height)
     capture_cpu_count_text = os.environ.get("TMOG_CAPTURE_CPU_COUNT")
     try:
@@ -112,6 +114,13 @@ def main() -> int:
         elif sys.argv[2] == "processes":
             window.process_view_combo.set_active_id("all" if resource == "interactions" else resource)
     window.present()
+    if capture_dimensions is not None:
+        def restore_capture_size() -> bool:
+            window.resize(*capture_dimensions)
+            return GLib.SOURCE_REMOVE
+
+        GLib.timeout_add(150, restore_capture_size)
+        GLib.timeout_add(600, restore_capture_size)
     if window._timer_id is not None:
         GLib.source_remove(window._timer_id)
 
@@ -132,6 +141,20 @@ def main() -> int:
             capture_widget = window if os.environ.get("TMOG_CAPTURE_TITLEBAR") == "1" else root
         allocation = capture_widget.get_allocation()
         print(f"capturing {window.stack.get_visible_child_name()} in {window._effective_theme} theme")
+        if capture_size:
+            visible_page = window.stack.get_visible_child()
+            preferred_heights = {
+                "window": window.get_preferred_height(),
+                "root": window.get_child().get_preferred_height(),
+                "sidebar": window.sidebar.get_preferred_height(),
+                "stack": window.stack.get_preferred_height(),
+                "page": visible_page.get_preferred_height(),
+            }
+            print(
+                f"capture-size: requested={capture_size}, "
+                f"allocated={allocation.width}x{allocation.height}, "
+                f"preferred-heights={preferred_heights}"
+            )
         if window.stack.get_visible_child_name() == "summary":
             adjustment = window.summary_scroller.get_vadjustment()
             overflow = max(0.0, adjustment.get_upper() - adjustment.get_page_size())

@@ -66,6 +66,8 @@ Summary 是启动后的全局状态页，适合快速判断当前瓶颈：
 
 默认窗口高度按照完整 Summary 的最小内容高度再增加 `10px` 设置；在标准字体与缩放下默认尺寸为 `1240×799`。启动后还会按实际 GTK 字体度量补足少量高度，避免首次打开时 Summary 底部落入滚动区域；屏幕本身高度不足时仍保留外层滚动。
 
+默认启动尺寸不会因紧凑布局而改变。窗口可以继续缩小到 `500×420`；宽度低于 `760px` 或高度低于 `520px` 时，侧栏自动收成带提示文字的图标栏，表格页工具栏与数据列可横向滚动，因此操作入口不会因小窗口而丢失。
+
 <a href="screenshots/summary-dark-latest.png"><img width="100%" src="screenshots/summary-dark-latest.png" alt="Summary page in dark mode"></a>
 
 ### 2. CPU 与自适应逻辑处理器
@@ -103,6 +105,7 @@ Overall 与 Logical processors 都可以单独收起。收起 Overall 后，下�
 
 - 多 GPU 设备通过适配器选择器切换，Intel/AMD DRM 与 NVIDIA 可以同时出现。
 - NVIDIA 专有驱动存在时使用 `nvidia-smi` 读取利用率、显存、频率、温度、功耗和风扇。
+- WSL 的 `nvidia-smi` bridge 如果长时间没有返回，本次运行会停止继续查询该 Provider，避免系统信息页或主窗口被驱动桥接进程卡住。
 - Intel UHD 等集成显卡使用共享系统内存时会显示 `Shared system memory`，不会伪造独立显存容量。
 - Provider 徽标说明数据来源；Details 继续显示驱动、PCI、设备节点与显存模式。
 
