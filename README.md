@@ -157,8 +157,9 @@ Linux 目前没有覆盖所有 NPU 的统一利用率接口。页面会区分“
 
 - 使用已安装桌面应用元数据、systemd application cgroup 和父子进程关系识别当前用户正在运行的应用，不把全部 system daemon 冒充成桌面应用。
 - 应用根节点聚合 CPU、常驻内存、Swap、线程和累计读写；展开后按照 PPID 显示真实内部进程树，单个进程仍可打开原有详情页。
+- 点击任意表头可以按应用名、PID、CPU、内存、Swap、线程或累计读写升降序排列；排序只调整同一层的兄弟节点，不会把应用与内部进程平铺到一起。
 - 工具栏和右键菜单可以结束、强制停止、暂停或恢复整个应用，也可以只操作选中的内部进程；应用组操作会逐个遵守 Linux 进程权限。
-- 每秒刷新时保留已经展开的应用、选中行和滚动位置。无法关联到 `.desktop` 文件时使用 cgroup 应用 ID 或顶层进程名，不伪造应用名称。
+- 每秒刷新时保留当前排序、已经展开的应用、选中行和滚动位置。无法关联到 `.desktop` 文件时使用 cgroup 应用 ID 或顶层进程名，不伪造应用名称。
 
 ### 11. Processes 四种视图
 
@@ -214,6 +215,7 @@ Machine identity 汇总发行版、Kernel、主机名、架构、处理器、物
 
 - 分别读取当前用户的 `systemctl --user` 与系统级 `systemctl`，按照 User services、System services、service unit、成员进程构成三层树。
 - service 行汇总其 cgroup 成员进程的 CPU 和常驻内存；展开 unit 后显示真实 PID、状态和命令，双击进程可以打开完整进程详情。
+- Service、PID、Active、State、CPU、Memory 和 Description 表头均支持升降序；User/System 作用域保持固定顺序，只在各自层级内排列 unit 与成员进程。
 - 可以按作用域、Active 或 Failed 筛选，并可搜索 unit、状态、描述和成员进程。服务 unit 通过显式刷新更新，进程资源仍随常规采样更新。
 - 支持 Start、Stop、Restart、Details 和右键菜单。用户服务使用当前用户权限；系统服务通过 systemd/polkit 授权，不调用 `sudo`，拒绝或取消授权会显示原始错误而不会报告成功。
 

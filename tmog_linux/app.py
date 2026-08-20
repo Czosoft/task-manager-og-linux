@@ -1644,6 +1644,7 @@ class TmogWindow(Gtk.Window):
         name_column.add_attribute(text_renderer, "text", 0)
         name_column.set_expand(True)
         name_column.set_resizable(True)
+        name_column.set_sort_column_id(0)
         self.application_view.append_column(name_column)
         add_text_column(self.application_view, "PID", 1, width=80)
         self._add_formatted_column(self.application_view, "CPU", 2, lambda value: f"{value:.1f}%", 80)
@@ -1652,6 +1653,8 @@ class TmogWindow(Gtk.Window):
         add_text_column(self.application_view, "Threads", 5, width=75)
         self._add_formatted_column(self.application_view, "Read", 6, format_bytes, 90)
         self._add_formatted_column(self.application_view, "Write", 7, format_bytes, 90)
+        for index in range(8):
+            self.application_store.set_sort_func(index, self._compare_tree_rows, index)
         self.application_scroller = scrollable(self.application_view)
         self.application_scroller.set_overlay_scrolling(False)
         self.application_scroller.get_style_context().add_class("stable-scroll")
@@ -1960,6 +1963,7 @@ class TmogWindow(Gtk.Window):
         unit_column.add_attribute(text_renderer, "text", 0)
         unit_column.set_expand(True)
         unit_column.set_resizable(True)
+        unit_column.set_sort_column_id(0)
         self.service_view.append_column(unit_column)
         add_text_column(self.service_view, "PID", 1, width=75)
         add_text_column(self.service_view, "Active", 2, width=85)
@@ -1967,8 +1971,8 @@ class TmogWindow(Gtk.Window):
         self._add_formatted_column(self.service_view, "CPU", 4, lambda value: f"{value:.1f}%", 78)
         self._add_formatted_column(self.service_view, "Memory", 5, format_bytes, 100)
         add_text_column(self.service_view, "Description", 6, expand=True)
-        for column in self.service_view.get_columns():
-            column.set_clickable(False)
+        for index in range(7):
+            self.service_store.set_sort_func(index, self._compare_service_tree_rows, index)
         self.service_scroller = scrollable(self.service_view)
         self.service_scroller.set_overlay_scrolling(False)
         self.service_scroller.get_style_context().add_class("stable-scroll")
@@ -2924,6 +2928,58 @@ class TmogWindow(Gtk.Window):
             items.sort(key=lambda item: (item.cpu_percent, item.memory_bytes), reverse=True)
         return roots, children
 
+    @staticmethod
+    def _compare_tree_rows(
+        model: Gtk.TreeModel,
+        left: Gtk.TreeIter,
+        right: Gtk.TreeIter,
+        column: int,
+    ) -> int:
+        left_value = model.get_value(left, column)
+        right_value = model.get_value(right, column)
+        if column == 1:
+            left_value = int(left_value) if str(left_value).isdigit() else -1
+            right_value = int(right_value) if str(right_value).isdigit() else -1
+        elif isinstance(left_value, str) and isinstance(right_value, str):
+            left_value = left_value.casefold()
+            right_value = right_value.casefold()
+        return (left_value > right_value) - (left_value < right_value)
+
+    @classmethod
+    def _compare_service_tree_rows(
+        cls,
+        model: Gtk.TreeModel,
+        left: Gtk.TreeIter,
+        right: Gtk.TreeIter,
+        column: int,
+    ) -> int:
+        left_key = model.get_value(left, 9)
+        right_key = model.get_value(right, 9)
+        if left_key.startswith("scope:") and right_key.startswith("scope:"):
+            scope_order = {"scope:user": 0, "scope:system": 1}
+            result = (scope_order[left_key] > scope_order[right_key]) - (
+                scope_order[left_key] < scope_order[right_key]
+            )
+            _sort_column, sort_order = model.get_sort_column_id()
+            return -result if sort_order == Gtk.SortType.DESCENDING else result
+        return cls._compare_tree_rows(model, left, right, column)
+
+    @staticmethod
+    def _tree_paths_by_key(model: Gtk.TreeModel, key_column: int) -> dict[str, Gtk.TreePath]:
+        paths: dict[str, Gtk.TreePath] = {}
+
+        def remember_path(
+            tree_model: Gtk.TreeModel,
+            path: Gtk.TreePath,
+            tree_iter: Gtk.TreeIter,
+            _data=None,
+        ) -> bool:
+            paths[tree_model.get_value(tree_iter, key_column)] = path.copy()
+            return False
+
+        model.foreach(remember_path, None)
+        return paths
+
     def _expanded_application_keys(self) -> set[str]:
         expanded: set[str] = set()
 
@@ -2943,7 +2999,6 @@ class TmogWindow(Gtk.Window):
         query = self.application_search.get_text().strip().casefold()
         groups = self._application_groups(processes)
         self.application_store.clear()
-        paths: dict[str, Gtk.TreePath] = {}
         visible_processes = 0
 
         for group in groups:
@@ -2978,7 +3033,6 @@ class TmogWindow(Gtk.Window):
                     group_key,
                 ),
             )
-            paths[group_key] = self.application_store.get_path(group_iter)
             roots, children = self._process_tree(group.processes)
             visited: set[int] = set()
 
@@ -3004,7 +3058,6 @@ class TmogWindow(Gtk.Window):
                         process_key,
                     ),
                 )
-                paths[process_key] = self.application_store.get_path(process_iter)
                 for child in children.get(process.pid, []):
                     append_process(child, process_iter)
 
@@ -3013,10 +3066,13 @@ class TmogWindow(Gtk.Window):
             for process in group.processes:
                 append_process(process, group_iter)
 
-        for key in expanded_keys:
-            path = paths.get(key)
-            if path is not None:
-                self.application_view.expand_row(path, False)
+        paths = self._tree_paths_by_key(self.application_store, 11)
+        expanded_paths = sorted(
+            (paths[key] for key in expanded_keys if key in paths),
+            key=lambda path: path.get_depth(),
+        )
+        for path in expanded_paths:
+            self.application_view.expand_row(path, False)
         selected_path = paths.get(selected_key)
         if selected_path is not None:
             self.application_view.get_selection().select_path(selected_path)
@@ -3749,7 +3805,6 @@ class TmogWindow(Gtk.Window):
             filtered.append(service)
 
         self.service_store.clear()
-        paths: dict[str, Gtk.TreePath] = {}
         grouped = {
             "user": [service for service in filtered if service.scope == "user"],
             "system": [service for service in filtered if service.scope == "system"],
@@ -3783,7 +3838,6 @@ class TmogWindow(Gtk.Window):
                     "folder-symbolic",
                 ),
             )
-            paths[scope_key] = self.service_store.get_path(scope_iter)
 
             for service in scoped_services:
                 members = process_map.get((service.scope, service.unit), [])
@@ -3811,7 +3865,6 @@ class TmogWindow(Gtk.Window):
                         service_icon,
                     ),
                 )
-                paths[service_key] = self.service_store.get_path(service_iter)
                 roots, children = self._process_tree(members)
                 visited: set[int] = set()
 
@@ -3836,7 +3889,6 @@ class TmogWindow(Gtk.Window):
                             "system-run-symbolic",
                         ),
                     )
-                    paths[process_key] = self.service_store.get_path(process_iter)
                     for child in children.get(process.pid, []):
                         append_process(child, process_iter)
 
@@ -3845,13 +3897,16 @@ class TmogWindow(Gtk.Window):
                 for process in members:
                     append_process(process, service_iter)
 
+        paths = self._tree_paths_by_key(self.service_store, 9)
         if not self._service_initial_render_done:
             expanded_keys.update(key for key in paths if key.startswith("scope:"))
             self._service_initial_render_done = True
-        for key in expanded_keys:
-            path = paths.get(key)
-            if path is not None:
-                self.service_view.expand_row(path, False)
+        expanded_paths = sorted(
+            (paths[key] for key in expanded_keys if key in paths),
+            key=lambda path: path.get_depth(),
+        )
+        for path in expanded_paths:
+            self.service_view.expand_row(path, False)
         selected_path = paths.get(selected_key)
         if selected_path is not None:
             self.service_view.get_selection().select_path(selected_path)

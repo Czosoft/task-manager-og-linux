@@ -330,6 +330,15 @@ def main() -> int:
     def prepare_hierarchy_capture() -> bool:
         visible = window.stack.get_visible_child_name()
         if visible == "applications":
+            application_columns = window.application_view.get_columns()
+            if not all(column.get_clickable() for column in application_columns):
+                raise RuntimeError("Applications contains a non-sortable column")
+            application_columns[0].clicked()
+            sort_column, sort_order = window.application_store.get_sort_column_id()
+            if sort_column != 0 or sort_order != Gtk.SortType.ASCENDING:
+                raise RuntimeError("Applications name sorting did not activate")
+            window._render_applications(window.snapshot.processes)
+
             def subtree_shape(tree_iter: Gtk.TreeIter) -> tuple[int, int]:
                 child = window.application_store.iter_children(tree_iter)
                 descendants = 0
@@ -356,13 +365,34 @@ def main() -> int:
                 path = window.application_store.get_path(tree_iter)
                 window.application_view.expand_row(path, True)
                 window.application_view.get_selection().select_path(path)
+                selected_key = window.application_store.get_value(tree_iter, 11)
+                window._render_applications(window.snapshot.processes)
+                selected_model, selected_iter = window.application_view.get_selection().get_selected()
+                if selected_iter is None or selected_model.get_value(selected_iter, 11) != selected_key:
+                    raise RuntimeError("Applications sorting refresh lost the selected application")
+                selected_path = selected_model.get_path(selected_iter)
+                if not window.application_view.row_expanded(selected_path):
+                    raise RuntimeError("Applications sorting refresh collapsed the selected application")
                 print(
                     f"application-tree: groups={window.application_store.iter_n_children(None)}, "
-                    f"selected-children={window.application_store.iter_n_children(tree_iter)}, "
-                    f"selected-depth={best_shape[0]}, selected-descendants={best_shape[1]}"
+                    f"selected-children={selected_model.iter_n_children(selected_iter)}, "
+                    f"selected-depth={best_shape[0]}, selected-descendants={best_shape[1]}, "
+                    f"sort={sort_column}/{sort_order.value_nick}"
                 )
         elif visible == "services":
+            service_columns = window.service_view.get_columns()
+            if not all(column.get_clickable() for column in service_columns):
+                raise RuntimeError("Services contains a non-sortable column")
+            service_columns[4].clicked()
+            service_columns[4].clicked()
+            sort_column, sort_order = window.service_store.get_sort_column_id()
+            if sort_column != 4 or sort_order != Gtk.SortType.DESCENDING:
+                raise RuntimeError("Services CPU descending sorting did not activate")
+            window._render_current_services()
+
             scope_iter = window.service_store.get_iter_first()
+            if scope_iter is not None and window.service_store.get_value(scope_iter, 9) != "scope:user":
+                raise RuntimeError("Services sorting moved System services ahead of User services")
             while scope_iter is not None:
                 service_iter = window.service_store.iter_children(scope_iter)
                 while service_iter is not None:
@@ -372,9 +402,18 @@ def main() -> int:
                         window.service_view.expand_row(scope_path, False)
                         window.service_view.expand_row(service_path, True)
                         window.service_view.get_selection().select_path(service_path)
+                        selected_key = window.service_store.get_value(service_iter, 9)
+                        window._render_current_services()
+                        selected_model, selected_iter = window.service_view.get_selection().get_selected()
+                        if selected_iter is None or selected_model.get_value(selected_iter, 9) != selected_key:
+                            raise RuntimeError("Services sorting refresh lost the selected service")
+                        selected_path = selected_model.get_path(selected_iter)
+                        if not window.service_view.row_expanded(selected_path):
+                            raise RuntimeError("Services sorting refresh collapsed the selected service")
                         print(
-                            f"service-tree: selected={window.service_store.get_value(service_iter, 0)}, "
-                            f"members={window.service_store.iter_n_children(service_iter)}"
+                            f"service-tree: selected={selected_model.get_value(selected_iter, 0)}, "
+                            f"members={selected_model.iter_n_children(selected_iter)}, "
+                            f"sort={sort_column}/{sort_order.value_nick}"
                         )
                         return GLib.SOURCE_REMOVE
                     service_iter = window.service_store.iter_next(service_iter)
