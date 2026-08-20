@@ -1,12 +1,15 @@
 import unittest
 import signal
+import subprocess
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import call, patch
 
 from tmog_linux.metrics import (
     LinuxMetricsCollector,
+    ServiceInfo,
     StartupEntry,
+    application_id_from_control_group,
     cpu_percent,
     format_bytes,
     parse_cpu_stat,
@@ -20,6 +23,8 @@ from tmog_linux.metrics import (
     parse_nvidia_smi_csv,
     parse_pci_device_name,
     parse_process_stat,
+    parse_systemctl_services,
+    service_membership_from_control_group,
 )
 
 
@@ -173,6 +178,99 @@ class ParserTests(unittest.TestCase):
 
         with self.assertRaises(PermissionError):
             LinuxMetricsCollector.suspend_process(1)
+
+    def test_named_process_signals_are_whitelisted(self):
+        with patch("tmog_linux.metrics.os.kill") as kill:
+            for signal_name in ("HUP", "INT", "TERM", "KILL", "USR1", "USR2"):
+                LinuxMetricsCollector.send_process_signal(4242, signal_name)
+            self.assertEqual(
+                kill.call_args_list,
+                [
+                    call(4242, signal.SIGHUP),
+                    call(4242, signal.SIGINT),
+                    call(4242, signal.SIGTERM),
+                    call(4242, signal.SIGKILL),
+                    call(4242, signal.SIGUSR1),
+                    call(4242, signal.SIGUSR2),
+                ],
+            )
+        with self.assertRaises(ValueError):
+            LinuxMetricsCollector.send_process_signal(4242, "SEGV")
+
+    def test_cgroup_application_and_service_membership(self):
+        self.assertEqual(
+            application_id_from_control_group(
+                "/user.slice/user-1000.slice/user@1000.service/app.slice/"
+                "app-gnome-org.gnome.Terminal-4821.scope"
+            ),
+            "org.gnome.Terminal",
+        )
+        self.assertEqual(
+            service_membership_from_control_group("/system.slice/NetworkManager.service"),
+            ("system", "NetworkManager.service"),
+        )
+        self.assertEqual(
+            service_membership_from_control_group(
+                "/user.slice/user-1000.slice/user@1000.service/app.slice/xdg-desktop-portal.service"
+            ),
+            ("user", "xdg-desktop-portal.service"),
+        )
+        self.assertIsNone(
+            service_membership_from_control_group(
+                "/user.slice/user-1000.slice/user@1000.service/app.slice/"
+                "app-gnome-org.gnome.Terminal-4821.scope"
+            )
+        )
+
+    def test_systemctl_service_parsing_and_control_scope(self):
+        text = (
+            "● failed.service loaded failed failed Demonstration failure\n"
+            "ssh.service loaded active running OpenSSH server\n"
+        )
+        services = parse_systemctl_services(text, "system")
+        self.assertEqual(
+            [(item.unit, item.active, item.state, item.scope) for item in services],
+            [
+                ("failed.service", "failed", "failed", "system"),
+                ("ssh.service", "active", "running", "system"),
+            ],
+        )
+
+        completed = subprocess.CompletedProcess([], 0, stdout="", stderr="")
+        with patch("tmog_linux.metrics.subprocess.run", return_value=completed) as run:
+            LinuxMetricsCollector.control_service(
+                ServiceInfo("demo.service", "inactive", "dead", "Demo", "user"),
+                "start",
+            )
+            self.assertEqual(run.call_args.args[0], ["systemctl", "--user", "start", "demo.service"])
+
+        denied = subprocess.CompletedProcess([], 1, stdout="", stderr="Access denied")
+        with patch("tmog_linux.metrics.subprocess.run", return_value=denied):
+            with self.assertRaisesRegex(RuntimeError, "Access denied"):
+                LinuxMetricsCollector.control_service(
+                    ServiceInfo("demo.service", "active", "running", "Demo", "system"),
+                    "stop",
+                )
+
+    def test_service_collection_queries_user_and_system_managers(self):
+        user_result = subprocess.CompletedProcess(
+            [],
+            0,
+            stdout="portal.service loaded active running Desktop portal\n",
+            stderr="",
+        )
+        system_result = subprocess.CompletedProcess(
+            [],
+            0,
+            stdout="ssh.service loaded active running OpenSSH server\n",
+            stderr="",
+        )
+        with patch("tmog_linux.metrics.subprocess.run", side_effect=[user_result, system_result]) as run:
+            services = LinuxMetricsCollector.services()
+        self.assertEqual([(item.scope, item.unit) for item in services], [("user", "portal.service"), ("system", "ssh.service")])
+        self.assertEqual(run.call_args_list[0].args[0][:2], ["systemctl", "--user"])
+        self.assertEqual(run.call_args_list[1].args[0][0], "systemctl")
+        self.assertNotIn("--user", run.call_args_list[1].args[0])
 
     def test_process_identity_swap_and_control_group(self):
         with TemporaryDirectory() as directory:

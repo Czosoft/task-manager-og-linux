@@ -33,6 +33,19 @@ def sanitize_public_capture(window: TmogWindow) -> None:
         if row[0] == current_user:
             row[0] = "demo"
 
+    def sanitize_model(model: Gtk.TreeModel, columns: tuple[int, ...]) -> None:
+        def sanitize_row(tree_model: Gtk.TreeModel, _path: Gtk.TreePath, tree_iter: Gtk.TreeIter, _data=None) -> bool:
+            for column in columns:
+                value = tree_model.get_value(tree_iter, column)
+                if isinstance(value, str) and current_user in value:
+                    tree_model.set_value(tree_iter, column, value.replace(current_user, "demo"))
+            return False
+
+        model.foreach(sanitize_row, None)
+
+    sanitize_model(window.application_store, (0, 1, 11))
+    sanitize_model(window.service_store, (0, 1, 6, 9))
+
     window.perf_widgets["network"]["details"].update({
         "hardware": "02:00:00:00:00:01",
         "ipv4": "192.0.2.10",
@@ -42,8 +55,10 @@ def sanitize_public_capture(window: TmogWindow) -> None:
     host_name = socket.gethostname()
 
     def sanitize_label(widget: Gtk.Widget) -> None:
-        if isinstance(widget, Gtk.Label) and widget.get_text() == host_name:
-            widget.set_text("demo-workstation")
+        if isinstance(widget, Gtk.Label):
+            text = widget.get_text()
+            text = text.replace(host_name, "demo-workstation").replace(current_user, "demo")
+            widget.set_text(text)
         if isinstance(widget, Gtk.Container):
             for child in widget.get_children():
                 sanitize_label(child)
@@ -192,6 +207,40 @@ def main() -> int:
                 raise RuntimeError("Process tree mode was flattened by table sorting")
             if any(column.get_clickable() for column in window.process_view.get_columns()):
                 raise RuntimeError("Process tree mode still exposes flat table sorting")
+        if window.stack.get_visible_child_name() == "applications":
+            group, process = window._selected_application_target()
+            if group is None or process is not None:
+                raise RuntimeError("Applications capture did not select an application group")
+            menu = window._build_application_menu(group)
+            labels = [
+                child.get_label()
+                for child in menu.get_children()
+                if isinstance(child, Gtk.MenuItem) and not isinstance(child, Gtk.SeparatorMenuItem)
+            ]
+            if labels != [
+                "End application",
+                "Force stop application",
+                "Pause application",
+                "Resume application",
+                "Send signal",
+                "Details",
+            ]:
+                raise RuntimeError(f"Unexpected application menu items: {labels}")
+        if window.stack.get_visible_child_name() == "services":
+            service, process = window._selected_service_target()
+            if service is None or process is not None:
+                raise RuntimeError("Services capture did not select a service unit")
+            selected_model, selected_iter = window.service_view.get_selection().get_selected()
+            if selected_model.iter_n_children(selected_iter) < 1:
+                raise RuntimeError("Selected service does not expose its member process tree")
+            menu = window._build_service_menu(service)
+            labels = [
+                child.get_label()
+                for child in menu.get_children()
+                if isinstance(child, Gtk.MenuItem) and not isinstance(child, Gtk.SeparatorMenuItem)
+            ]
+            if labels != ["Start service", "Stop service", "Restart service", "Details"]:
+                raise RuntimeError(f"Unexpected service menu items: {labels}")
         output.parent.mkdir(parents=True, exist_ok=True)
         surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, allocation.width, allocation.height)
         context = cairo.Context(surface)
@@ -250,7 +299,7 @@ def main() -> int:
             for child in window._process_context_menu.get_children()
             if isinstance(child, Gtk.MenuItem) and not isinstance(child, Gtk.SeparatorMenuItem)
         ]
-        expected_labels = ["End process", "Force stop", "Pause process", "Resume process", "Details"]
+        expected_labels = ["End process", "Force stop", "Pause process", "Resume process", "Send signal", "Details"]
         if labels != expected_labels:
             raise RuntimeError(f"Unexpected process context menu items: {labels}")
         process_interaction_state["menu"] = ", ".join(labels)
@@ -276,6 +325,60 @@ def main() -> int:
         first = window.startup_store.get_iter_first()
         if first is not None:
             window.startup_view.get_selection().select_iter(first)
+        return GLib.SOURCE_REMOVE
+
+    def prepare_hierarchy_capture() -> bool:
+        visible = window.stack.get_visible_child_name()
+        if visible == "applications":
+            def subtree_shape(tree_iter: Gtk.TreeIter) -> tuple[int, int]:
+                child = window.application_store.iter_children(tree_iter)
+                descendants = 0
+                depth = 0
+                while child is not None:
+                    child_descendants, child_depth = subtree_shape(child)
+                    descendants += 1 + child_descendants
+                    depth = max(depth, 1 + child_depth)
+                    child = window.application_store.iter_next(child)
+                return descendants, depth
+
+            tree_iter = window.application_store.get_iter_first()
+            best_iter = None
+            best_shape = (-1, -1)
+            while tree_iter is not None:
+                descendants, depth = subtree_shape(tree_iter)
+                shape = (depth, descendants)
+                if shape > best_shape:
+                    best_iter = tree_iter
+                    best_shape = shape
+                tree_iter = window.application_store.iter_next(tree_iter)
+            tree_iter = best_iter
+            if tree_iter is not None and window.application_store.iter_n_children(tree_iter) > 0:
+                path = window.application_store.get_path(tree_iter)
+                window.application_view.expand_row(path, True)
+                window.application_view.get_selection().select_path(path)
+                print(
+                    f"application-tree: groups={window.application_store.iter_n_children(None)}, "
+                    f"selected-children={window.application_store.iter_n_children(tree_iter)}, "
+                    f"selected-depth={best_shape[0]}, selected-descendants={best_shape[1]}"
+                )
+        elif visible == "services":
+            scope_iter = window.service_store.get_iter_first()
+            while scope_iter is not None:
+                service_iter = window.service_store.iter_children(scope_iter)
+                while service_iter is not None:
+                    if window.service_store.iter_n_children(service_iter) > 0:
+                        scope_path = window.service_store.get_path(scope_iter)
+                        service_path = window.service_store.get_path(service_iter)
+                        window.service_view.expand_row(scope_path, False)
+                        window.service_view.expand_row(service_path, True)
+                        window.service_view.get_selection().select_path(service_path)
+                        print(
+                            f"service-tree: selected={window.service_store.get_value(service_iter, 0)}, "
+                            f"members={window.service_store.iter_n_children(service_iter)}"
+                        )
+                        return GLib.SOURCE_REMOVE
+                    service_iter = window.service_store.iter_next(service_iter)
+                scope_iter = window.service_store.iter_next(scope_iter)
         return GLib.SOURCE_REMOVE
 
     def select_io_resource() -> bool:
@@ -312,6 +415,7 @@ def main() -> int:
         GLib.timeout_add(3200, override_core_count)
     GLib.timeout_add(3100, exercise_process_interactions)
     GLib.timeout_add(3200, prepare_startup_capture)
+    GLib.timeout_add(3225, prepare_hierarchy_capture)
     GLib.timeout_add(3250, select_io_resource)
     if os.environ.get("TMOG_CAPTURE_PUBLIC") == "1":
         GLib.timeout_add(3300, sanitize_public_capture, window)

@@ -3,9 +3,11 @@ from __future__ import annotations
 import configparser
 import math
 import getpass
+import shlex
 import threading
 import time
 from collections import defaultdict, deque
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
@@ -22,9 +24,12 @@ from .metrics import (
     LinuxMetricsCollector,
     NetworkInterfaceSnapshot,
     ProcessInfo,
+    ServiceInfo,
     SystemSnapshot,
+    application_id_from_control_group,
     format_bytes,
     format_duration,
+    service_membership_from_control_group,
 )
 
 
@@ -57,6 +62,14 @@ RESOURCE_GRAPH_MAXIMA = {
 }
 SUMMARY_DEFAULT_WINDOW_HEIGHT = 799
 SUMMARY_VIEWPORT_MARGIN = 10
+
+
+@dataclass(slots=True)
+class ApplicationGroup:
+    identifier: str
+    name: str
+    icon_name: str
+    processes: list[ProcessInfo]
 
 
 DARK_CSS = b"""
@@ -981,6 +994,8 @@ class TmogWindow(Gtk.Window):
         self.refresh_seconds = 1
         self._collecting = False
         self._last_process_render = 0.0
+        self._last_application_render = 0.0
+        self._last_service_render = 0.0
         self._sample_generation = 0
         self._current_user = getpass.getuser()
         self._timer_id: int | None = None
@@ -988,6 +1003,11 @@ class TmogWindow(Gtk.Window):
         self._summary_default_fit_passes = 0
         self.nav_buttons: dict[str, Gtk.ToggleButton] = {}
         self.process_cpu_bars_enabled = True
+        self._services: list[ServiceInfo] = []
+        self._service_action_in_progress = False
+        self._desktop_apps_by_id: dict[str, Gio.AppInfo] = {}
+        self._desktop_apps_by_executable: dict[str, Gio.AppInfo] = {}
+        self._load_desktop_application_catalog()
         self._io_histories: dict[
             str,
             dict[str, tuple[deque[float], deque[float], deque[float]]],
@@ -1032,6 +1052,7 @@ class TmogWindow(Gtk.Window):
 
         self._build_summary_page()
         self._build_performance_page()
+        self._build_applications_page()
         self._build_processes_page()
         self._build_system_page()
         self._build_startup_page()
@@ -1056,6 +1077,22 @@ class TmogWindow(Gtk.Window):
         if schema is None or not schema.has_key("color-scheme"):
             return None
         return Gio.Settings.new_full(schema, None, None)
+
+    def _load_desktop_application_catalog(self) -> None:
+        for app_info in Gio.AppInfo.get_all():
+            app_id = (app_info.get_id() or "").removesuffix(".desktop").casefold()
+            if app_id:
+                self._desktop_apps_by_id.setdefault(app_id, app_info)
+            executable = app_info.get_executable()
+            if executable:
+                self._desktop_apps_by_executable.setdefault(Path(executable).name.casefold(), app_info)
+            commandline = app_info.get_commandline() or ""
+            try:
+                command = shlex.split(commandline)
+            except ValueError:
+                command = commandline.split()
+            if command:
+                self._desktop_apps_by_executable.setdefault(Path(command[0]).name.casefold(), app_info)
 
     def _system_prefers_dark(self) -> bool:
         if self._desktop_settings is not None:
@@ -1143,6 +1180,7 @@ class TmogWindow(Gtk.Window):
         items = [
             ("summary", "Summary", "view-grid-symbolic"),
             ("performance", "Performance", performance_icon),
+            ("applications", "Applications", "application-x-executable-symbolic"),
             ("processes", "Processes", "system-run-symbolic"),
             ("system", "System Info", "computer-symbolic"),
             ("startup", "Startup Apps", "media-playback-start-symbolic"),
@@ -1189,8 +1227,12 @@ class TmogWindow(Gtk.Window):
             button.set_active(True)
         if name == "processes" and self.snapshot:
             self._render_processes(self.snapshot.processes)
+        if name == "applications" and self.snapshot:
+            self._render_applications(self.snapshot.processes)
         if name == "users" and self.snapshot:
             self._render_users(self.snapshot.processes)
+        if name == "services" and self.snapshot:
+            self._render_services(self._services, self.snapshot.processes)
 
     @staticmethod
     def _page_box(title: str, eyebrow: str) -> tuple[Gtk.Box, Gtk.Box]:
@@ -1539,6 +1581,87 @@ class TmogWindow(Gtk.Window):
         page_scroll.get_style_context().add_class("stable-scroll")
         self.performance_stack.add_named(page_scroll, name)
 
+    def _build_applications_page(self) -> None:
+        page, content = self._page_box("Applications", "DESKTOP GROUPS  /  PROCESS TREES")
+        toolbar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        toolbar.get_style_context().add_class("toolbar")
+        self.application_search = Gtk.SearchEntry()
+        self.application_search.set_placeholder_text("Filter application, process, PID or command")
+        self.application_search.set_size_request(300, -1)
+        self.application_search.connect(
+            "search-changed",
+            lambda _entry: self._render_applications(self.snapshot.processes) if self.snapshot else None,
+        )
+        toolbar.pack_start(self.application_search, False, False, 0)
+        self.application_count_label = Gtk.Label(label="Waiting for process provider")
+        self.application_count_label.get_style_context().add_class("muted")
+        toolbar.pack_start(self.application_count_label, False, False, 6)
+        toolbar.pack_start(Gtk.Box(), True, True, 0)
+
+        self.application_pause_button = icon_button("media-playback-pause-symbolic", "Pause selected application or process")
+        self.application_pause_button.connect("clicked", lambda _button: self._control_application_target("pause"))
+        toolbar.pack_start(self.application_pause_button, False, False, 0)
+        self.application_resume_button = icon_button("media-playback-start-symbolic", "Resume selected application or process")
+        self.application_resume_button.connect("clicked", lambda _button: self._control_application_target("resume"))
+        toolbar.pack_start(self.application_resume_button, False, False, 0)
+        self.application_end_button = icon_button("media-playback-stop-symbolic", "End selected application or process")
+        self.application_end_button.connect("clicked", lambda _button: self._confirm_application_action(False))
+        toolbar.pack_start(self.application_end_button, False, False, 0)
+        self.application_kill_button = icon_button("process-stop-symbolic", "Force stop selected application or process")
+        self.application_kill_button.get_style_context().add_class("danger-button")
+        self.application_kill_button.connect("clicked", lambda _button: self._confirm_application_action(True))
+        toolbar.pack_start(self.application_kill_button, False, False, 0)
+        content.pack_start(toolbar, False, False, 0)
+
+        self.application_store = Gtk.TreeStore(
+            str,
+            str,
+            float,
+            GObject.TYPE_UINT64,
+            GObject.TYPE_UINT64,
+            int,
+            GObject.TYPE_UINT64,
+            GObject.TYPE_UINT64,
+            str,
+            object,
+            object,
+            str,
+        )
+        self.application_view = Gtk.TreeView(model=self.application_store)
+        self.application_view.set_rules_hint(True)
+        self.application_view.connect("row-activated", self._application_row_activated)
+        self.application_view.connect("button-press-event", self._on_application_button_press)
+        self.application_view.connect("popup-menu", self._on_application_popup_menu)
+        self.application_view.get_selection().connect("changed", self._application_selection_changed)
+
+        icon_renderer = Gtk.CellRendererPixbuf()
+        text_renderer = Gtk.CellRendererText()
+        text_renderer.set_property("ellipsize", Pango.EllipsizeMode.END)
+        name_column = Gtk.TreeViewColumn("Application / process")
+        name_column.pack_start(icon_renderer, False)
+        name_column.pack_start(text_renderer, True)
+        name_column.add_attribute(icon_renderer, "icon-name", 8)
+        name_column.add_attribute(text_renderer, "text", 0)
+        name_column.set_expand(True)
+        name_column.set_resizable(True)
+        self.application_view.append_column(name_column)
+        add_text_column(self.application_view, "PID", 1, width=80)
+        self._add_formatted_column(self.application_view, "CPU", 2, lambda value: f"{value:.1f}%", 80)
+        self._add_formatted_column(self.application_view, "Memory", 3, format_bytes, 100)
+        self._add_formatted_column(self.application_view, "Swap", 4, format_bytes, 90)
+        add_text_column(self.application_view, "Threads", 5, width=75)
+        self._add_formatted_column(self.application_view, "Read", 6, format_bytes, 90)
+        self._add_formatted_column(self.application_view, "Write", 7, format_bytes, 90)
+        self.application_scroller = scrollable(self.application_view)
+        self.application_scroller.set_overlay_scrolling(False)
+        self.application_scroller.get_style_context().add_class("stable-scroll")
+        content.pack_start(self.application_scroller, True, True, 0)
+        self.application_status = Gtk.Label(label="Applications are grouped from desktop metadata, cgroups and process ancestry", xalign=0)
+        self.application_status.get_style_context().add_class("statusbar")
+        content.pack_start(self.application_status, False, False, 0)
+        self._application_selection_changed(self.application_view.get_selection())
+        self.stack.add_named(page, "applications")
+
     def _build_processes_page(self) -> None:
         page, content = self._page_box("Processes", "PROCESS TREE  /  NATIVE SIGNALS")
         toolbar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
@@ -1758,14 +1881,103 @@ class TmogWindow(Gtk.Window):
         self.stack.add_named(page, "users")
 
     def _build_services_page(self) -> None:
-        page, content = self._page_box("Services", "SYSTEMD  /  READ ONLY")
-        self.service_store = Gtk.ListStore(str, str, str, str)
-        view = Gtk.TreeView(model=self.service_store)
-        add_text_column(view, "Unit", 0, expand=True)
-        add_text_column(view, "Active", 1, width=90)
-        add_text_column(view, "State", 2, width=100)
-        add_text_column(view, "Description", 3, expand=True)
-        content.pack_start(scrollable(view), True, True, 0)
+        page, content = self._page_box("Services", "SYSTEMD  /  USER + SYSTEM CONTROL")
+        toolbar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        toolbar.get_style_context().add_class("toolbar")
+        self.service_scope_combo = Gtk.ComboBoxText()
+        for key, label in (
+            ("all", "All services"),
+            ("user", "User services"),
+            ("system", "System services"),
+            ("active", "Active only"),
+            ("failed", "Failed only"),
+        ):
+            self.service_scope_combo.append(key, label)
+        self.service_scope_combo.set_active_id("all")
+        self.service_scope_combo.connect("changed", lambda _combo: self._render_current_services())
+        toolbar.pack_start(self.service_scope_combo, False, False, 0)
+        self.service_search = Gtk.SearchEntry()
+        self.service_search.set_placeholder_text("Filter unit, state, description or process")
+        self.service_search.set_size_request(300, -1)
+        self.service_search.connect("search-changed", lambda _entry: self._render_current_services())
+        toolbar.pack_start(self.service_search, False, False, 0)
+        self.service_count_label = Gtk.Label(label="Loading systemd services...")
+        self.service_count_label.get_style_context().add_class("muted")
+        toolbar.pack_start(self.service_count_label, False, False, 6)
+        toolbar.pack_start(Gtk.Box(), True, True, 0)
+
+        self.service_start_button = icon_button("media-playback-start-symbolic", "Start selected service")
+        self.service_start_button.connect("clicked", lambda _button: self._confirm_service_action("start"))
+        toolbar.pack_start(self.service_start_button, False, False, 0)
+        self.service_stop_button = icon_button("media-playback-stop-symbolic", "Stop selected service")
+        self.service_stop_button.get_style_context().add_class("danger-button")
+        self.service_stop_button.connect("clicked", lambda _button: self._confirm_service_action("stop"))
+        toolbar.pack_start(self.service_stop_button, False, False, 0)
+        self.service_restart_button = icon_button(
+            available_icon_name("media-playlist-repeat-symbolic", "view-refresh-symbolic"),
+            "Restart selected service",
+        )
+        self.service_restart_button.connect("clicked", lambda _button: self._confirm_service_action("restart"))
+        toolbar.pack_start(self.service_restart_button, False, False, 0)
+        self.service_details_button = icon_button(
+            available_icon_name("document-properties-symbolic", "dialog-information-symbolic"),
+            "Show service details",
+        )
+        self.service_details_button.connect("clicked", lambda _button: self._open_selected_service_details())
+        toolbar.pack_start(self.service_details_button, False, False, 0)
+        refresh = icon_button("view-refresh-symbolic", "Refresh service units")
+        refresh.connect("clicked", lambda _button: self._refresh_services())
+        toolbar.pack_start(refresh, False, False, 0)
+        content.pack_start(toolbar, False, False, 0)
+
+        self.service_store = Gtk.TreeStore(
+            str,
+            str,
+            str,
+            str,
+            float,
+            GObject.TYPE_UINT64,
+            str,
+            object,
+            object,
+            str,
+            str,
+        )
+        self.service_view = Gtk.TreeView(model=self.service_store)
+        self.service_view.set_rules_hint(True)
+        self.service_view.connect("row-activated", self._service_row_activated)
+        self.service_view.connect("button-press-event", self._on_service_button_press)
+        self.service_view.connect("popup-menu", self._on_service_popup_menu)
+        self.service_view.get_selection().connect("changed", self._service_selection_changed)
+
+        icon_renderer = Gtk.CellRendererPixbuf()
+        text_renderer = Gtk.CellRendererText()
+        text_renderer.set_property("ellipsize", Pango.EllipsizeMode.END)
+        unit_column = Gtk.TreeViewColumn("Service / process")
+        unit_column.pack_start(icon_renderer, False)
+        unit_column.pack_start(text_renderer, True)
+        unit_column.add_attribute(icon_renderer, "icon-name", 10)
+        unit_column.add_attribute(text_renderer, "text", 0)
+        unit_column.set_expand(True)
+        unit_column.set_resizable(True)
+        self.service_view.append_column(unit_column)
+        add_text_column(self.service_view, "PID", 1, width=75)
+        add_text_column(self.service_view, "Active", 2, width=85)
+        add_text_column(self.service_view, "State", 3, width=90)
+        self._add_formatted_column(self.service_view, "CPU", 4, lambda value: f"{value:.1f}%", 78)
+        self._add_formatted_column(self.service_view, "Memory", 5, format_bytes, 100)
+        add_text_column(self.service_view, "Description", 6, expand=True)
+        for column in self.service_view.get_columns():
+            column.set_clickable(False)
+        self.service_scroller = scrollable(self.service_view)
+        self.service_scroller.set_overlay_scrolling(False)
+        self.service_scroller.get_style_context().add_class("stable-scroll")
+        content.pack_start(self.service_scroller, True, True, 0)
+        self.service_status = Gtk.Label(label="Service controls use the current systemd and polkit permissions", xalign=0)
+        self.service_status.get_style_context().add_class("statusbar")
+        content.pack_start(self.service_status, False, False, 0)
+        self._service_initial_render_done = False
+        self._service_selection_changed(self.service_view.get_selection())
         self.stack.add_named(page, "services")
 
     def _build_settings_page(self) -> None:
@@ -1957,6 +2169,10 @@ class TmogWindow(Gtk.Window):
         visible = self.stack.get_visible_child_name()
         if visible == "processes" and time.monotonic() - self._last_process_render >= self.refresh_seconds * 0.8:
             self._render_processes(snapshot.processes)
+        elif visible == "applications" and time.monotonic() - self._last_application_render >= self.refresh_seconds * 0.8:
+            self._render_applications(snapshot.processes)
+        elif visible == "services" and time.monotonic() - self._last_service_render >= self.refresh_seconds * 1.8:
+            self._render_services(self._services, snapshot.processes)
         elif visible == "users":
             self._render_users(snapshot.processes)
         return GLib.SOURCE_REMOVE
@@ -2577,6 +2793,485 @@ class TmogWindow(Gtk.Window):
             if tile:
                 tile.update(sensor.temperature_c)
 
+    def _desktop_app_for_id(self, application_id: str) -> Gio.AppInfo | None:
+        normalized = application_id.removesuffix(".desktop").casefold()
+        direct = self._desktop_apps_by_id.get(normalized)
+        if direct is not None:
+            return direct
+        return next(
+            (
+                app_info
+                for candidate, app_info in self._desktop_apps_by_id.items()
+                if candidate.endswith(f".{normalized}") or normalized.endswith(f".{candidate}")
+            ),
+            None,
+        )
+
+    def _desktop_app_for_process(self, process: ProcessInfo) -> Gio.AppInfo | None:
+        candidates = [process.name]
+        try:
+            command = shlex.split(process.command)
+        except ValueError:
+            command = process.command.split()
+        if command:
+            executable = Path(command[0]).name
+            if executable not in {"env", "flatpak", "bwrap", "python", "python3", "sh", "bash"}:
+                candidates.append(executable)
+        for candidate in candidates:
+            app_info = self._desktop_apps_by_executable.get(Path(candidate).name.casefold())
+            if app_info is not None:
+                return app_info
+        return None
+
+    @staticmethod
+    def _application_fallback_name(application_id: str) -> str:
+        name = application_id.rsplit(".", 1)[-1].replace("-", " ").replace("_", " ").strip()
+        return name or application_id
+
+    @staticmethod
+    def _application_icon_name(app_info: Gio.AppInfo | None) -> str:
+        icon = app_info.get_icon() if app_info is not None else None
+        if isinstance(icon, Gio.ThemedIcon):
+            names = icon.get_names()
+            if names:
+                return names[0]
+        return "application-x-executable-symbolic"
+
+    def _explicit_application_identity(self, process: ProcessInfo) -> tuple[str, str, str] | None:
+        application_id = application_id_from_control_group(process.control_group)
+        app_info = self._desktop_app_for_id(application_id) if application_id else None
+        if app_info is None:
+            app_info = self._desktop_app_for_process(process)
+        if app_info is not None:
+            app_id = (app_info.get_id() or application_id or process.name).removesuffix(".desktop")
+            return f"desktop:{app_id.casefold()}", app_info.get_display_name(), self._application_icon_name(app_info)
+        if application_id:
+            return (
+                f"scope:{application_id.casefold()}",
+                self._application_fallback_name(application_id),
+                "application-x-executable-symbolic",
+            )
+        return None
+
+    def _application_groups(self, processes: list[ProcessInfo]) -> list[ApplicationGroup]:
+        eligible = {
+            process.pid: process
+            for process in processes
+            if process.user == self._current_user and not process.command.startswith("[")
+        }
+        infrastructure = {
+            "systemd",
+            "dbus-daemon",
+            "dbus-broker",
+            "gnome-session-binary",
+            "gnome-session-c",
+            "xdg-permission-store",
+        }
+        identities = {pid: self._explicit_application_identity(process) for pid, process in eligible.items()}
+        grouped: dict[str, ApplicationGroup] = {}
+
+        for process in eligible.values():
+            chain: list[ProcessInfo] = []
+            visited: set[int] = set()
+            current = process
+            while current.pid not in visited:
+                visited.add(current.pid)
+                chain.append(current)
+                parent = eligible.get(current.ppid)
+                if parent is None or parent.pid == current.pid:
+                    break
+                current = parent
+
+            identity = next((identities[item.pid] for item in chain if identities[item.pid] is not None), None)
+            root = chain[-1]
+            if identity is None:
+                if any(service_membership_from_control_group(item.control_group) for item in chain):
+                    continue
+                if root.name.casefold() in infrastructure:
+                    continue
+                identity = (
+                    f"process:{root.pid}",
+                    root.name,
+                    "application-x-executable-symbolic",
+                )
+
+            identifier, name, icon_name = identity
+            group = grouped.setdefault(identifier, ApplicationGroup(identifier, name, icon_name, []))
+            group.processes.append(process)
+
+        return sorted(
+            grouped.values(),
+            key=lambda group: (
+                sum(process.cpu_percent for process in group.processes),
+                sum(process.memory_bytes for process in group.processes),
+                group.name.casefold(),
+            ),
+            reverse=True,
+        )
+
+    @staticmethod
+    def _process_tree(processes: list[ProcessInfo]) -> tuple[list[ProcessInfo], dict[int, list[ProcessInfo]]]:
+        by_pid = {process.pid: process for process in processes}
+        children: dict[int, list[ProcessInfo]] = defaultdict(list)
+        roots: list[ProcessInfo] = []
+        for process in processes:
+            if process.ppid in by_pid and process.ppid != process.pid:
+                children[process.ppid].append(process)
+            else:
+                roots.append(process)
+        roots.sort(key=lambda item: (item.cpu_percent, item.memory_bytes), reverse=True)
+        for items in children.values():
+            items.sort(key=lambda item: (item.cpu_percent, item.memory_bytes), reverse=True)
+        return roots, children
+
+    def _expanded_application_keys(self) -> set[str]:
+        expanded: set[str] = set()
+
+        def remember(view: Gtk.TreeView, path: Gtk.TreePath, _data=None) -> None:
+            tree_iter = view.get_model().get_iter(path)
+            expanded.add(view.get_model().get_value(tree_iter, 11))
+
+        self.application_view.map_expanded_rows(remember, None)
+        return expanded
+
+    def _render_applications(self, processes: list[ProcessInfo]) -> None:
+        selected_model, selected_iter = self.application_view.get_selection().get_selected()
+        selected_key = selected_model.get_value(selected_iter, 11) if selected_iter is not None else None
+        expanded_keys = self._expanded_application_keys()
+        adjustment = self.application_scroller.get_vadjustment()
+        previous_scroll = adjustment.get_value()
+        query = self.application_search.get_text().strip().casefold()
+        groups = self._application_groups(processes)
+        self.application_store.clear()
+        paths: dict[str, Gtk.TreePath] = {}
+        visible_processes = 0
+
+        for group in groups:
+            searchable = " ".join(
+                [group.name, group.identifier]
+                + [f"{process.pid} {process.name} {process.command}" for process in group.processes]
+            ).casefold()
+            if query and query not in searchable:
+                continue
+            visible_processes += len(group.processes)
+            cpu = sum(process.cpu_percent for process in group.processes)
+            memory = sum(process.memory_bytes for process in group.processes)
+            swap = sum(process.swap_bytes for process in group.processes)
+            threads = sum(process.threads for process in group.processes)
+            read_bytes = sum(process.read_bytes for process in group.processes)
+            write_bytes = sum(process.write_bytes for process in group.processes)
+            group_key = f"application:{group.identifier}"
+            group_iter = self.application_store.append(
+                None,
+                (
+                    group.name,
+                    "",
+                    cpu,
+                    memory,
+                    swap,
+                    threads,
+                    read_bytes,
+                    write_bytes,
+                    group.icon_name,
+                    None,
+                    group,
+                    group_key,
+                ),
+            )
+            paths[group_key] = self.application_store.get_path(group_iter)
+            roots, children = self._process_tree(group.processes)
+            visited: set[int] = set()
+
+            def append_process(process: ProcessInfo, parent: Gtk.TreeIter) -> None:
+                if process.pid in visited:
+                    return
+                visited.add(process.pid)
+                process_key = f"process:{process.pid}"
+                process_iter = self.application_store.append(
+                    parent,
+                    (
+                        process.name,
+                        str(process.pid),
+                        process.cpu_percent,
+                        process.memory_bytes,
+                        process.swap_bytes,
+                        process.threads,
+                        process.read_bytes,
+                        process.write_bytes,
+                        "system-run-symbolic",
+                        process,
+                        group,
+                        process_key,
+                    ),
+                )
+                paths[process_key] = self.application_store.get_path(process_iter)
+                for child in children.get(process.pid, []):
+                    append_process(child, process_iter)
+
+            for root in roots:
+                append_process(root, group_iter)
+            for process in group.processes:
+                append_process(process, group_iter)
+
+        for key in expanded_keys:
+            path = paths.get(key)
+            if path is not None:
+                self.application_view.expand_row(path, False)
+        selected_path = paths.get(selected_key)
+        if selected_path is not None:
+            self.application_view.get_selection().select_path(selected_path)
+        GLib.idle_add(self._restore_application_scroll, previous_scroll)
+        visible_groups = self.application_store.iter_n_children(None)
+        self.application_count_label.set_text(f"{visible_groups} applications  /  {visible_processes} processes")
+        self.application_status.set_text(
+            f"CURRENT USER {self._current_user}  /  DESKTOP + CGROUP + ANCESTRY GROUPING  /  "
+            f"SAMPLE {datetime.now().strftime('%H:%M:%S')}"
+        )
+        self._application_selection_changed(self.application_view.get_selection())
+        self._last_application_render = time.monotonic()
+
+    def _restore_application_scroll(self, value: float) -> bool:
+        adjustment = self.application_scroller.get_vadjustment()
+        adjustment.set_value(
+            clamped_scroll_value(value, adjustment.get_lower(), adjustment.get_upper(), adjustment.get_page_size())
+        )
+        return GLib.SOURCE_REMOVE
+
+    def _selected_application_target(self) -> tuple[ApplicationGroup | None, ProcessInfo | None]:
+        model, tree_iter = self.application_view.get_selection().get_selected()
+        if tree_iter is None:
+            return None, None
+        return model.get_value(tree_iter, 10), model.get_value(tree_iter, 9)
+
+    def _application_selection_changed(self, selection: Gtk.TreeSelection) -> None:
+        group, process = self._selected_application_target()
+        targets = [process] if process is not None else group.processes if group is not None else []
+        stopped = [target.state in ("Stopped", "Tracing") for target in targets]
+        self.application_pause_button.set_sensitive(any(not state for state in stopped))
+        self.application_resume_button.set_sensitive(any(stopped))
+        self.application_end_button.set_sensitive(bool(targets))
+        self.application_kill_button.set_sensitive(bool(targets))
+
+    def _application_row_activated(
+        self,
+        view: Gtk.TreeView,
+        path: Gtk.TreePath,
+        _column: Gtk.TreeViewColumn | None,
+    ) -> None:
+        model = view.get_model()
+        tree_iter = model.get_iter(path)
+        process = model.get_value(tree_iter, 9)
+        if process is not None:
+            self._open_process_details(process)
+        elif view.row_expanded(path):
+            view.collapse_row(path)
+        else:
+            view.expand_row(path, False)
+
+    def _on_application_button_press(self, view: Gtk.TreeView, event: Gdk.EventButton) -> bool:
+        if event.button != Gdk.BUTTON_SECONDARY or event.type != Gdk.EventType.BUTTON_PRESS:
+            return False
+        target = view.get_path_at_pos(int(event.x), int(event.y))
+        if target is None:
+            return False
+        path, _column, _cell_x, _cell_y = target
+        view.grab_focus()
+        view.get_selection().select_path(path)
+        return self._popup_application_menu(event)
+
+    def _on_application_popup_menu(self, _view: Gtk.TreeView) -> bool:
+        return self._popup_application_menu()
+
+    def _popup_application_menu(self, event: Gdk.EventButton | None = None) -> bool:
+        group, process = self._selected_application_target()
+        if process is not None:
+            menu = self._build_process_menu(process)
+        elif group is not None:
+            menu = self._build_application_menu(group)
+        else:
+            return False
+        if event is not None:
+            menu.popup_at_pointer(event)
+        else:
+            menu.popup_at_widget(self.application_view, Gdk.Gravity.CENTER, Gdk.Gravity.CENTER, None)
+        return True
+
+    def _build_application_menu(self, group: ApplicationGroup) -> Gtk.Menu:
+        menu = Gtk.Menu()
+        for label, callback in (
+            ("End application", lambda: self._confirm_application_action(False, group=group)),
+            ("Force stop application", lambda: self._confirm_application_action(True, group=group)),
+        ):
+            item = Gtk.MenuItem(label=label)
+            item.connect("activate", lambda _item, action=callback: action())
+            menu.append(item)
+        menu.append(Gtk.SeparatorMenuItem())
+        pause_item = Gtk.MenuItem(label="Pause application")
+        pause_item.connect("activate", lambda _item: self._control_application_target("pause", group=group))
+        menu.append(pause_item)
+        resume_item = Gtk.MenuItem(label="Resume application")
+        resume_item.connect("activate", lambda _item: self._control_application_target("resume", group=group))
+        menu.append(resume_item)
+        menu.append(self._build_signal_submenu(lambda name: self._signal_application_target(name, group=group)))
+        menu.append(Gtk.SeparatorMenuItem())
+        details_item = Gtk.MenuItem(label="Details")
+        details_item.connect("activate", lambda _item: self._open_application_details(group))
+        menu.append(details_item)
+        menu.show_all()
+        self._application_context_menu = menu
+        return menu
+
+    def _application_target_processes(
+        self,
+        group: ApplicationGroup | None = None,
+        process: ProcessInfo | None = None,
+    ) -> list[ProcessInfo]:
+        if group is None and process is None:
+            group, process = self._selected_application_target()
+        return [process] if process is not None else list(group.processes) if group is not None else []
+
+    def _confirm_application_action(
+        self,
+        force: bool,
+        *,
+        group: ApplicationGroup | None = None,
+        process: ProcessInfo | None = None,
+    ) -> None:
+        targets = self._application_target_processes(group, process)
+        if not targets:
+            self._message("Select an application or process", "Choose a row before using this action.")
+            return
+        target_name = process.name if process is not None else group.name if group is not None else "selection"
+        dialog = Gtk.MessageDialog(
+            transient_for=self,
+            modal=True,
+            message_type=Gtk.MessageType.WARNING,
+            buttons=Gtk.ButtonsType.CANCEL,
+            text=f"{'Force stop' if force else 'End'} {target_name}?",
+        )
+        dialog.format_secondary_text(
+            f"This action targets {len(targets)} process{'es' if len(targets) != 1 else ''}. "
+            + ("Unsaved work may be lost immediately." if force else "Processes receive SIGTERM and may save their state.")
+        )
+        dialog.add_button("Force stop" if force else "End", Gtk.ResponseType.OK)
+        response = dialog.run()
+        dialog.destroy()
+        if response == Gtk.ResponseType.OK:
+            self._signal_process_targets(targets, "KILL" if force else "TERM")
+
+    def _control_application_target(
+        self,
+        action: str,
+        *,
+        group: ApplicationGroup | None = None,
+        process: ProcessInfo | None = None,
+    ) -> None:
+        targets = self._application_target_processes(group, process)
+        if not targets:
+            self._message("Select an application or process", "Choose a row before using this action.")
+            return
+        errors: list[str] = []
+        for target in targets:
+            try:
+                if action == "pause":
+                    self.collector.suspend_process(target.pid)
+                elif action == "resume":
+                    self.collector.resume_process(target.pid)
+                else:
+                    raise ValueError(f"Unsupported process action: {action}")
+            except (PermissionError, ProcessLookupError, OSError, ValueError) as error:
+                errors.append(f"PID {target.pid}: {error}")
+        if errors:
+            self._message("Some process actions failed", "\n".join(errors[:8]), Gtk.MessageType.ERROR)
+        self.request_update()
+
+    def _signal_application_target(
+        self,
+        signal_name: str,
+        *,
+        group: ApplicationGroup | None = None,
+        process: ProcessInfo | None = None,
+    ) -> None:
+        targets = self._application_target_processes(group, process)
+        if targets:
+            target_name = process.name if process is not None else group.name if group is not None else "selection"
+            self._send_signal_with_confirmation(targets, signal_name, target_name)
+
+    def _send_signal_with_confirmation(
+        self,
+        targets: list[ProcessInfo],
+        signal_name: str,
+        target_name: str,
+    ) -> None:
+        if signal_name in {"TERM", "KILL"}:
+            dialog = Gtk.MessageDialog(
+                transient_for=self,
+                modal=True,
+                message_type=Gtk.MessageType.WARNING,
+                buttons=Gtk.ButtonsType.CANCEL,
+                text=f"Send {signal_name} to {target_name}?",
+            )
+            dialog.format_secondary_text(
+                f"The signal targets {len(targets)} process{'es' if len(targets) != 1 else ''}. "
+                + ("Unsaved work may be lost immediately." if signal_name == "KILL" else "Processes may terminate.")
+            )
+            dialog.add_button(f"Send {signal_name}", Gtk.ResponseType.OK)
+            response = dialog.run()
+            dialog.destroy()
+            if response != Gtk.ResponseType.OK:
+                return
+        self._signal_process_targets(targets, signal_name)
+
+    def _signal_process_targets(self, targets: list[ProcessInfo], signal_name: str) -> None:
+        errors: list[str] = []
+        for target in sorted(targets, key=lambda item: item.pid, reverse=True):
+            try:
+                self.collector.send_process_signal(target.pid, signal_name)
+            except (PermissionError, ProcessLookupError, OSError, ValueError) as error:
+                errors.append(f"PID {target.pid}: {error}")
+        if errors:
+            self._message("Some signals failed", "\n".join(errors[:8]), Gtk.MessageType.ERROR)
+        self.request_update()
+
+    def _open_application_details(self, group: ApplicationGroup) -> None:
+        dialog = Gtk.Dialog(title=group.name, transient_for=self, modal=True)
+        dialog.get_style_context().add_class("process-details-dialog")
+        dialog.add_button("Close", Gtk.ResponseType.CLOSE)
+        dialog.set_default_size(650, 470)
+        body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        body.set_border_width(16)
+        details = DetailGrid(
+            [
+                ("identifier", "Application identity"), ("processes", "Processes"),
+                ("cpu", "Combined CPU"), ("memory", "Resident memory"),
+                ("swap", "Swap"), ("threads", "Threads"),
+                ("read", "Total read I/O"), ("write", "Total write I/O"),
+            ],
+            columns=2,
+        )
+        details.update({
+            "identifier": group.identifier,
+            "processes": str(len(group.processes)),
+            "cpu": f"{sum(process.cpu_percent for process in group.processes):.1f}%",
+            "memory": format_bytes(sum(process.memory_bytes for process in group.processes)),
+            "swap": format_bytes(sum(process.swap_bytes for process in group.processes)),
+            "threads": str(sum(process.threads for process in group.processes)),
+            "read": format_bytes(sum(process.read_bytes for process in group.processes)),
+            "write": format_bytes(sum(process.write_bytes for process in group.processes)),
+        })
+        body.pack_start(details, False, False, 0)
+        process_list = Gtk.Label(
+            label="\n".join(f"{process.pid:<8} {process.name}  {process.command}" for process in group.processes),
+            xalign=0,
+        )
+        process_list.set_selectable(True)
+        process_list.set_line_wrap(True)
+        body.pack_start(scrollable(process_list), True, True, 0)
+        dialog.get_content_area().add(body)
+        dialog.show_all()
+        dialog.run()
+        dialog.destroy()
+
     def _process_visible(self, model: Gtk.TreeModel, tree_iter: Gtk.TreeIter, _data=None) -> bool:
         if not hasattr(self, "process_search"):
             return True
@@ -2757,6 +3452,24 @@ class TmogWindow(Gtk.Window):
             )
         return True
 
+    @staticmethod
+    def _build_signal_submenu(callback) -> Gtk.MenuItem:
+        signal_item = Gtk.MenuItem(label="Send signal")
+        submenu = Gtk.Menu()
+        for signal_name, label in (
+            ("HUP", "Hang up (HUP)"),
+            ("INT", "Interrupt (INT)"),
+            ("TERM", "Terminate (TERM)"),
+            ("KILL", "Kill (KILL)"),
+            ("USR1", "User 1 (USR1)"),
+            ("USR2", "User 2 (USR2)"),
+        ):
+            item = Gtk.MenuItem(label=label)
+            item.connect("activate", lambda _item, name=signal_name: callback(name))
+            submenu.append(item)
+        signal_item.set_submenu(submenu)
+        return signal_item
+
     def _build_process_menu(self, process: ProcessInfo) -> Gtk.Menu:
         menu = Gtk.Menu()
         end_item = Gtk.MenuItem(label="End process")
@@ -2776,6 +3489,7 @@ class TmogWindow(Gtk.Window):
         resume_item.set_sensitive(stopped)
         resume_item.connect("activate", lambda _item: self._control_process("resume", process))
         menu.append(resume_item)
+        menu.append(self._build_signal_submenu(lambda name: self._send_process_signal(process, name)))
         menu.append(Gtk.SeparatorMenuItem())
 
         details_item = Gtk.MenuItem(label="Details")
@@ -2784,6 +3498,9 @@ class TmogWindow(Gtk.Window):
         menu.show_all()
         self._process_context_menu = menu
         return menu
+
+    def _send_process_signal(self, process: ProcessInfo, signal_name: str) -> None:
+        self._send_signal_with_confirmation([process], signal_name, process.name)
 
     def _show_process_details(
         self,
@@ -2981,6 +3698,377 @@ class TmogWindow(Gtk.Window):
             self._startup_selection_changed(self.startup_view.get_selection())
         return GLib.SOURCE_REMOVE
 
+    def _render_current_services(self) -> None:
+        processes = self.snapshot.processes if self.snapshot else []
+        self._render_services(self._services, processes)
+
+    @staticmethod
+    def _service_process_map(processes: list[ProcessInfo]) -> dict[tuple[str, str], list[ProcessInfo]]:
+        members: dict[tuple[str, str], list[ProcessInfo]] = defaultdict(list)
+        for process in processes:
+            membership = service_membership_from_control_group(process.control_group)
+            if membership is not None:
+                members[membership].append(process)
+        return members
+
+    def _expanded_service_keys(self) -> set[str]:
+        expanded: set[str] = set()
+
+        def remember(view: Gtk.TreeView, path: Gtk.TreePath, _data=None) -> None:
+            tree_iter = view.get_model().get_iter(path)
+            expanded.add(view.get_model().get_value(tree_iter, 9))
+
+        self.service_view.map_expanded_rows(remember, None)
+        return expanded
+
+    def _render_services(self, services: list[ServiceInfo], processes: list[ProcessInfo]) -> None:
+        selected_model, selected_iter = self.service_view.get_selection().get_selected()
+        selected_key = selected_model.get_value(selected_iter, 9) if selected_iter is not None else None
+        expanded_keys = self._expanded_service_keys()
+        adjustment = self.service_scroller.get_vadjustment()
+        previous_scroll = adjustment.get_value()
+        mode = self.service_scope_combo.get_active_id() or "all"
+        query = self.service_search.get_text().strip().casefold()
+        process_map = self._service_process_map(processes)
+
+        filtered: list[ServiceInfo] = []
+        for service in services:
+            members = process_map.get((service.scope, service.unit), [])
+            if mode in {"user", "system"} and service.scope != mode:
+                continue
+            if mode == "active" and service.active != "active":
+                continue
+            if mode == "failed" and service.active != "failed" and service.state != "failed":
+                continue
+            searchable = " ".join(
+                [service.unit, service.active, service.state, service.description, service.scope]
+                + [f"{process.pid} {process.name} {process.command}" for process in members]
+            ).casefold()
+            if query and query not in searchable:
+                continue
+            filtered.append(service)
+
+        self.service_store.clear()
+        paths: dict[str, Gtk.TreePath] = {}
+        grouped = {
+            "user": [service for service in filtered if service.scope == "user"],
+            "system": [service for service in filtered if service.scope == "system"],
+        }
+        for scope, title, description in (
+            ("user", "User services", "Current user's systemd manager"),
+            ("system", "System services", "System-wide systemd manager / polkit protected"),
+        ):
+            scoped_services = grouped[scope]
+            if not scoped_services:
+                continue
+            scope_members = [
+                process
+                for service in scoped_services
+                for process in process_map.get((service.scope, service.unit), [])
+            ]
+            scope_key = f"scope:{scope}"
+            scope_iter = self.service_store.append(
+                None,
+                (
+                    title,
+                    "",
+                    f"{len(scoped_services)} units",
+                    "",
+                    sum(process.cpu_percent for process in scope_members),
+                    sum(process.memory_bytes for process in scope_members),
+                    description,
+                    None,
+                    None,
+                    scope_key,
+                    "folder-symbolic",
+                ),
+            )
+            paths[scope_key] = self.service_store.get_path(scope_iter)
+
+            for service in scoped_services:
+                members = process_map.get((service.scope, service.unit), [])
+                service_key = f"service:{service.scope}:{service.unit}"
+                service_icon = (
+                    "dialog-error-symbolic"
+                    if service.active == "failed" or service.state == "failed"
+                    else "media-playback-start-symbolic"
+                    if service.active == "active"
+                    else "media-playback-stop-symbolic"
+                )
+                service_iter = self.service_store.append(
+                    scope_iter,
+                    (
+                        service.unit,
+                        "",
+                        service.active,
+                        service.state,
+                        sum(process.cpu_percent for process in members),
+                        sum(process.memory_bytes for process in members),
+                        service.description,
+                        service,
+                        None,
+                        service_key,
+                        service_icon,
+                    ),
+                )
+                paths[service_key] = self.service_store.get_path(service_iter)
+                roots, children = self._process_tree(members)
+                visited: set[int] = set()
+
+                def append_process(process: ProcessInfo, parent: Gtk.TreeIter) -> None:
+                    if process.pid in visited:
+                        return
+                    visited.add(process.pid)
+                    process_key = f"service-process:{service.scope}:{service.unit}:{process.pid}"
+                    process_iter = self.service_store.append(
+                        parent,
+                        (
+                            process.name,
+                            str(process.pid),
+                            "process",
+                            process.state,
+                            process.cpu_percent,
+                            process.memory_bytes,
+                            process.command,
+                            service,
+                            process,
+                            process_key,
+                            "system-run-symbolic",
+                        ),
+                    )
+                    paths[process_key] = self.service_store.get_path(process_iter)
+                    for child in children.get(process.pid, []):
+                        append_process(child, process_iter)
+
+                for root in roots:
+                    append_process(root, service_iter)
+                for process in members:
+                    append_process(process, service_iter)
+
+        if not self._service_initial_render_done:
+            expanded_keys.update(key for key in paths if key.startswith("scope:"))
+            self._service_initial_render_done = True
+        for key in expanded_keys:
+            path = paths.get(key)
+            if path is not None:
+                self.service_view.expand_row(path, False)
+        selected_path = paths.get(selected_key)
+        if selected_path is not None:
+            self.service_view.get_selection().select_path(selected_path)
+        GLib.idle_add(self._restore_service_scroll, previous_scroll)
+        active = sum(service.active == "active" for service in filtered)
+        failed = sum(service.active == "failed" or service.state == "failed" for service in filtered)
+        self.service_count_label.set_text(f"{len(filtered)} services  /  {active} active  /  {failed} failed")
+        self.service_status.set_text(
+            f"USER {sum(service.scope == 'user' for service in services)}  /  "
+            f"SYSTEM {sum(service.scope == 'system' for service in services)}  /  "
+            f"MEMBERSHIP FROM PROCESS CGROUPS  /  {datetime.now().strftime('%H:%M:%S')}"
+        )
+        self._service_selection_changed(self.service_view.get_selection())
+        self._last_service_render = time.monotonic()
+
+    def _restore_service_scroll(self, value: float) -> bool:
+        adjustment = self.service_scroller.get_vadjustment()
+        adjustment.set_value(
+            clamped_scroll_value(value, adjustment.get_lower(), adjustment.get_upper(), adjustment.get_page_size())
+        )
+        return GLib.SOURCE_REMOVE
+
+    def _selected_service_target(self) -> tuple[ServiceInfo | None, ProcessInfo | None]:
+        model, tree_iter = self.service_view.get_selection().get_selected()
+        if tree_iter is None:
+            return None, None
+        return model.get_value(tree_iter, 7), model.get_value(tree_iter, 8)
+
+    def _service_selection_changed(self, _selection: Gtk.TreeSelection) -> None:
+        service, process = self._selected_service_target()
+        selectable_service = service is not None and process is None and not self._service_action_in_progress
+        active = selectable_service and service.active == "active"
+        self.service_start_button.set_sensitive(selectable_service and not active)
+        self.service_stop_button.set_sensitive(bool(active))
+        self.service_restart_button.set_sensitive(bool(active))
+        self.service_details_button.set_sensitive(selectable_service)
+
+    def _service_row_activated(
+        self,
+        view: Gtk.TreeView,
+        path: Gtk.TreePath,
+        _column: Gtk.TreeViewColumn | None,
+    ) -> None:
+        model = view.get_model()
+        tree_iter = model.get_iter(path)
+        process = model.get_value(tree_iter, 8)
+        service = model.get_value(tree_iter, 7)
+        if process is not None:
+            self._open_process_details(process)
+        elif service is not None:
+            self._open_service_details(service)
+        elif view.row_expanded(path):
+            view.collapse_row(path)
+        else:
+            view.expand_row(path, False)
+
+    def _on_service_button_press(self, view: Gtk.TreeView, event: Gdk.EventButton) -> bool:
+        if event.button != Gdk.BUTTON_SECONDARY or event.type != Gdk.EventType.BUTTON_PRESS:
+            return False
+        target = view.get_path_at_pos(int(event.x), int(event.y))
+        if target is None:
+            return False
+        path, _column, _cell_x, _cell_y = target
+        view.grab_focus()
+        view.get_selection().select_path(path)
+        return self._popup_service_menu(event)
+
+    def _on_service_popup_menu(self, _view: Gtk.TreeView) -> bool:
+        return self._popup_service_menu()
+
+    def _popup_service_menu(self, event: Gdk.EventButton | None = None) -> bool:
+        service, process = self._selected_service_target()
+        if process is not None:
+            menu = self._build_process_menu(process)
+        elif service is not None:
+            menu = self._build_service_menu(service)
+        else:
+            return False
+        if event is not None:
+            menu.popup_at_pointer(event)
+        else:
+            menu.popup_at_widget(self.service_view, Gdk.Gravity.CENTER, Gdk.Gravity.CENTER, None)
+        return True
+
+    def _build_service_menu(self, service: ServiceInfo) -> Gtk.Menu:
+        menu = Gtk.Menu()
+        for action, label in (("start", "Start service"), ("stop", "Stop service"), ("restart", "Restart service")):
+            item = Gtk.MenuItem(label=label)
+            item.set_sensitive(
+                (action == "start" and service.active != "active")
+                or (action in {"stop", "restart"} and service.active == "active")
+            )
+            item.connect("activate", lambda _item, selected_action=action: self._confirm_service_action(selected_action, service))
+            menu.append(item)
+        menu.append(Gtk.SeparatorMenuItem())
+        details_item = Gtk.MenuItem(label="Details")
+        details_item.connect("activate", lambda _item: self._open_service_details(service))
+        menu.append(details_item)
+        menu.show_all()
+        self._service_context_menu = menu
+        return menu
+
+    def _confirm_service_action(self, action: str, service: ServiceInfo | None = None) -> None:
+        selected_service, process = self._selected_service_target()
+        service = service or (selected_service if process is None else None)
+        if service is None:
+            self._message("Select a service", "Choose a service row rather than a process or scope row.")
+            return
+        dialog = Gtk.MessageDialog(
+            transient_for=self,
+            modal=True,
+            message_type=Gtk.MessageType.WARNING if action in {"stop", "restart"} else Gtk.MessageType.QUESTION,
+            buttons=Gtk.ButtonsType.CANCEL,
+            text=f"{action.title()} {service.unit}?",
+        )
+        dialog.format_secondary_text(
+            f"Scope: {service.scope}. The request uses current systemd and polkit permissions; "
+            "dependent applications or sessions may be affected."
+        )
+        dialog.add_button(action.title(), Gtk.ResponseType.OK)
+        response = dialog.run()
+        dialog.destroy()
+        if response != Gtk.ResponseType.OK:
+            return
+        self._service_action_in_progress = True
+        self.service_status.set_text(f"{action.upper()} {service.scope}:{service.unit}...")
+        self._service_selection_changed(self.service_view.get_selection())
+        threading.Thread(target=self._run_service_action, args=(service, action), daemon=True).start()
+
+    def _run_service_action(self, service: ServiceInfo, action: str) -> None:
+        error: str | None = None
+        try:
+            self.collector.control_service(service, action)
+        except (RuntimeError, ValueError) as exception:
+            error = str(exception)
+        GLib.idle_add(self._finish_service_action, service, action, error)
+
+    def _finish_service_action(self, service: ServiceInfo, action: str, error: str | None) -> bool:
+        self._service_action_in_progress = False
+        if error:
+            self._message(
+                f"Unable to {action} {service.unit}",
+                error,
+                Gtk.MessageType.ERROR,
+            )
+        self._refresh_services()
+        return GLib.SOURCE_REMOVE
+
+    def _refresh_services(self) -> None:
+        self.service_count_label.set_text("Refreshing system and user services...")
+        threading.Thread(target=self._load_services, daemon=True).start()
+
+    def _load_services(self) -> None:
+        GLib.idle_add(self._apply_services, self.collector.services())
+
+    def _apply_services(self, services: list[ServiceInfo]) -> bool:
+        self._services = services
+        self._render_current_services()
+        return GLib.SOURCE_REMOVE
+
+    def _service_members(self, service: ServiceInfo) -> list[ProcessInfo]:
+        if not self.snapshot:
+            return []
+        return self._service_process_map(self.snapshot.processes).get((service.scope, service.unit), [])
+
+    def _open_selected_service_details(self) -> None:
+        service, process = self._selected_service_target()
+        if service is not None and process is None:
+            self._open_service_details(service)
+
+    def _open_service_details(self, service: ServiceInfo) -> None:
+        members = self._service_members(service)
+        dialog = Gtk.Dialog(title=service.unit, transient_for=self, modal=True)
+        dialog.get_style_context().add_class("process-details-dialog")
+        dialog.add_button("Close", Gtk.ResponseType.CLOSE)
+        dialog.set_default_size(670, 480)
+        body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        body.set_border_width(16)
+        details = DetailGrid(
+            [
+                ("unit", "Unit"), ("scope", "Manager scope"),
+                ("active", "Active state"), ("state", "Sub-state"),
+                ("processes", "Member processes"), ("cpu", "Combined CPU"),
+                ("memory", "Resident memory"), ("permission", "Control authorization"),
+            ],
+            columns=2,
+        )
+        details.update({
+            "unit": service.unit,
+            "scope": service.scope,
+            "active": service.active,
+            "state": service.state,
+            "processes": str(len(members)),
+            "cpu": f"{sum(process.cpu_percent for process in members):.1f}%",
+            "memory": format_bytes(sum(process.memory_bytes for process in members)),
+            "permission": "Current user" if service.scope == "user" else "systemd / polkit",
+        })
+        body.pack_start(details, False, False, 0)
+        description_title = Gtk.Label(label="Description", xalign=0)
+        description_title.get_style_context().add_class("detail-label")
+        body.pack_start(description_title, False, False, 0)
+        description = Gtk.Label(label=service.description, xalign=0)
+        description.set_line_wrap(True)
+        body.pack_start(description, False, False, 0)
+        member_list = Gtk.Label(
+            label="\n".join(f"{process.pid:<8} {process.name}  {process.command}" for process in members)
+            or "No currently visible member processes",
+            xalign=0,
+        )
+        member_list.set_selectable(True)
+        member_list.set_line_wrap(True)
+        body.pack_start(scrollable(member_list), True, True, 0)
+        dialog.get_content_area().add(body)
+        dialog.show_all()
+        dialog.run()
+        dialog.destroy()
+
     def _load_slow_lists(self) -> None:
         startup = self.collector.startup_entries()
         services = self.collector.services()
@@ -2988,9 +4076,8 @@ class TmogWindow(Gtk.Window):
 
     def _apply_slow_lists(self, startup, services) -> bool:
         self._apply_startup_entries(startup)
-        self.service_store.clear()
-        for service in services:
-            self.service_store.append((service.unit, service.active, service.state, service.description))
+        self._services = services
+        self._render_current_services()
         return GLib.SOURCE_REMOVE
 
     def _on_key_press(self, _widget, event) -> bool:

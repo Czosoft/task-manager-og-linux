@@ -206,6 +206,7 @@ class ServiceInfo:
     active: str
     state: str
     description: str
+    scope: str = "system"
 
 
 CPU_FIELDS = ("user", "nice", "system", "idle", "iowait", "irq", "softirq", "steal")
@@ -330,6 +331,69 @@ def parse_default_route_interface(text: str) -> str | None:
         if flags & 0x1:
             candidates.append((metric, fields[0]))
     return min(candidates)[1] if candidates else None
+
+
+def _decode_systemd_component(value: str) -> str:
+    return re.sub(
+        r"\\x([0-9a-fA-F]{2})",
+        lambda match: chr(int(match.group(1), 16)),
+        value,
+    )
+
+
+def application_id_from_control_group(control_group: str) -> str | None:
+    """Return the desktop-style application id encoded in a systemd app cgroup."""
+    for raw_segment in reversed(control_group.split("/")):
+        segment = _decode_systemd_component(raw_segment)
+        if not segment.startswith("app-") or not segment.endswith((".scope", ".slice")):
+            continue
+        identifier = re.sub(r"\.(?:scope|slice)$", "", segment[4:])
+        for prefix in ("gnome-", "flatpak-", "snap-"):
+            if identifier.startswith(prefix):
+                identifier = identifier[len(prefix):]
+                break
+        identifier = re.sub(r"-(?:\d+|[0-9a-fA-F]{16,})$", "", identifier)
+        identifier = identifier.split("@", 1)[0]
+        return identifier or None
+    return None
+
+
+def service_membership_from_control_group(control_group: str) -> tuple[str, str] | None:
+    """Map a process cgroup to its innermost system or user service unit."""
+    segments = [_decode_systemd_component(segment) for segment in control_group.split("/") if segment]
+    manager_index = next(
+        (index for index, segment in enumerate(segments) if re.fullmatch(r"user@\d+\.service", segment)),
+        None,
+    )
+    candidates = [
+        (index, segment)
+        for index, segment in enumerate(segments)
+        if segment.endswith(".service") and not re.fullmatch(r"user@\d+\.service", segment)
+    ]
+    if not candidates:
+        return None
+    unit_index, unit = candidates[-1]
+    scope = "user" if manager_index is not None and unit_index > manager_index else "system"
+    return scope, unit
+
+
+def parse_systemctl_services(text: str, scope: str) -> list[ServiceInfo]:
+    services: list[ServiceInfo] = []
+    for raw_line in text.splitlines():
+        line = raw_line.strip().removeprefix("●").strip()
+        parts = line.split(None, 4)
+        if len(parts) < 5 or not parts[0].endswith(".service"):
+            continue
+        services.append(
+            ServiceInfo(
+                unit=parts[0],
+                active=parts[2],
+                state=parts[3],
+                description=parts[4],
+                scope=scope,
+            )
+        )
+    return services
 
 
 def parse_pci_device_name(text: str, vendor_id: str, device_id: str) -> str | None:
@@ -1482,6 +1546,21 @@ class LinuxMetricsCollector:
         LinuxMetricsCollector._signal_process(pid, signal.SIGCONT)
 
     @staticmethod
+    def send_process_signal(pid: int, signal_name: str) -> None:
+        allowed = {
+            "HUP": signal.SIGHUP,
+            "INT": signal.SIGINT,
+            "TERM": signal.SIGTERM,
+            "KILL": signal.SIGKILL,
+            "USR1": signal.SIGUSR1,
+            "USR2": signal.SIGUSR2,
+        }
+        process_signal = allowed.get(signal_name.upper())
+        if process_signal is None:
+            raise ValueError(f"Unsupported process signal: {signal_name}")
+        LinuxMetricsCollector._signal_process(pid, process_signal)
+
+    @staticmethod
     def _signal_process(pid: int, process_signal: signal.Signals) -> None:
         if pid in (0, 1, os.getpid()):
             raise PermissionError("This process is protected by TMOG Linux.")
@@ -1601,22 +1680,42 @@ class LinuxMetricsCollector:
 
     @staticmethod
     def services() -> list[ServiceInfo]:
-        command = [
-            "systemctl",
-            "list-units",
-            "--type=service",
-            "--all",
-            "--no-legend",
-            "--no-pager",
-            "--plain",
-        ]
-        try:
-            output = subprocess.run(command, capture_output=True, text=True, timeout=6, check=False).stdout
-        except (OSError, subprocess.SubprocessError):
-            return []
         services: list[ServiceInfo] = []
-        for line in output.splitlines():
-            parts = line.strip().split(None, 4)
-            if len(parts) >= 5:
-                services.append(ServiceInfo(parts[0], parts[2], parts[3], parts[4]))
-        return services
+        for scope in ("user", "system"):
+            command = ["systemctl"]
+            if scope == "user":
+                command.append("--user")
+            command.extend(
+                [
+                    "list-units",
+                    "--type=service",
+                    "--all",
+                    "--no-legend",
+                    "--no-pager",
+                    "--plain",
+                ]
+            )
+            try:
+                result = subprocess.run(command, capture_output=True, text=True, timeout=6, check=False)
+            except (OSError, subprocess.SubprocessError):
+                continue
+            services.extend(parse_systemctl_services(result.stdout, scope))
+        return sorted(services, key=lambda item: (item.scope != "user", item.unit.casefold()))
+
+    @staticmethod
+    def control_service(service: ServiceInfo, action: str) -> None:
+        if action not in {"start", "stop", "restart"}:
+            raise ValueError(f"Unsupported service action: {action}")
+        if service.scope not in {"system", "user"}:
+            raise ValueError(f"Unsupported service scope: {service.scope}")
+        command = ["systemctl"]
+        if service.scope == "user":
+            command.append("--user")
+        command.extend([action, service.unit])
+        try:
+            result = subprocess.run(command, capture_output=True, text=True, timeout=30, check=False)
+        except (OSError, subprocess.SubprocessError) as error:
+            raise RuntimeError(str(error)) from error
+        if result.returncode != 0:
+            detail = result.stderr.strip() or result.stdout.strip() or f"systemctl exited with {result.returncode}"
+            raise RuntimeError(detail)

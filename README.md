@@ -41,8 +41,9 @@
 | **GPU / NPU** | Intel、AMD、NVIDIA 多适配器；NPU 检测和明确的 Provider 可用状态 |
 | **Disk / Network** | 磁盘活动与吞吐；网卡链路、地址、累计流量和实时收发曲线 |
 | **Energy / Thermals** | 电池或系统输入、Intel RAPL、NVIDIA 功耗，以及 thermal、hwmon、NVIDIA 温度传感器 |
-| **Processes** | 全部、当前用户、活动和进程树；搜索、排序、CPU 压力条、I/O、启动时间和信号操作 |
-| **System** | 系统身份、XDG 自启动项、用户资源汇总和 systemd 服务状态 |
+| **Applications** | 按桌面元数据、systemd cgroup 和父子关系归组；应用与内部进程可逐层展开并显示聚合资源 |
+| **Processes** | 全部、当前用户、活动和进程树；搜索、排序、CPU 压力条、I/O、启动时间和完整信号操作 |
+| **System** | 系统身份、XDG 自启动项、用户资源汇总，以及可展开和控制的 systemd 用户/系统服务 |
 | **Appearance** | 跟随 AnduinOS/Ubuntu，也可以固定使用深色或 macOS 风格的中性浅色界面 |
 
 ## 图示导览
@@ -150,11 +151,20 @@ Linux 目前没有覆盖所有 NPU 的统一利用率接口。页面会区分“
 - 下方按来源列出独立传感器卡片，可同时包含 thermal zone、hwmon 与 NVIDIA GPU。
 - WSL、虚拟机或部分主板不暴露温度时，页面会显示 Provider 不可用，而不是固定假值。
 
-### 10. Processes 四种视图
+### 10. Applications 应用与内部进程树
+
+<a href="screenshots/applications-latest.png"><img width="100%" src="screenshots/applications-latest.png" alt="Applications grouped by desktop identity and expanded into their process trees"></a>
+
+- 使用已安装桌面应用元数据、systemd application cgroup 和父子进程关系识别当前用户正在运行的应用，不把全部 system daemon 冒充成桌面应用。
+- 应用根节点聚合 CPU、常驻内存、Swap、线程和累计读写；展开后按照 PPID 显示真实内部进程树，单个进程仍可打开原有详情页。
+- 工具栏和右键菜单可以结束、强制停止、暂停或恢复整个应用，也可以只操作选中的内部进程；应用组操作会逐个遵守 Linux 进程权限。
+- 每秒刷新时保留已经展开的应用、选中行和滚动位置。无法关联到 `.desktop` 文件时使用 cgroup 应用 ID 或顶层进程名，不伪造应用名称。
+
+### 11. Processes 四种视图
 
 Processes 工具栏在四种模式中共享搜索、计数、Follow selection、End process 和 Force stop。表格可按 PID、名称、用户、状态、CPU、内存、线程、I/O 或启动时间升降序排列，并会在每秒刷新时保留排序、选中进程和滚动位置；Settings 还能切换 CPU 百分比文字与压力条。
 
-右键菜单提供 End process、Force stop、Pause process、Resume process 和 Details。结束与强制停止操作继续显示确认对话框；暂停与继续分别发送 Linux `SIGSTOP` 和 `SIGCONT`。PID 0、PID 1 以及 TMOG 自身受到保护，普通用户也不能绕过 Linux 原有的进程权限。详情页显示父 PID、Swap、累计读写、用户/内核 CPU 时间、命令行和 control group。
+右键菜单提供 End process、Force stop、Pause process、Resume process、Send signal 和 Details。信号子菜单支持 `HUP`、`INT`、`TERM`、`KILL`、`USR1`、`USR2`；`TERM` 和 `KILL` 会再次确认。暂停与继续分别发送 Linux `SIGSTOP` 和 `SIGCONT`。PID 0、PID 1 以及 TMOG 自身受到保护，普通用户也不能绕过 Linux 原有的进程权限。详情页显示父 PID、Swap、累计读写、用户/内核 CPU 时间、命令行和 control group。
 
 #### All processes
 
@@ -176,35 +186,38 @@ Processes 工具栏在四种模式中共享搜索、计数、Follow selection、
 
 #### Process tree
 
-依据 PPID 建立父子关系并用缩进表达层级；缺失父进程或不可见父进程会作为根节点显示。树模式仍然保留排序、资源列和信号操作。
+依据 PPID 建立父子关系并用缩进表达层级；缺失父进程或不可见父进程会作为根节点显示。树模式保留资源列和信号操作，并关闭平铺表格排序，避免破坏父子顺序。
 
 <a href="screenshots/processes-tree-latest.png"><img width="100%" src="screenshots/processes-tree-latest.png" alt="Linux process hierarchy based on parent process IDs"></a>
 
-### 11. System Info 系统信息
+### 12. System Info 系统信息
 
 <a href="screenshots/system-info-latest.png"><img width="100%" src="screenshots/system-info-latest.png" alt="Operating system, kernel, CPU, GPU and runtime information"></a>
 
 Machine identity 汇总发行版、Kernel、主机名、架构、处理器、物理核心、逻辑处理器、CPU Cache、图形设备和 Python 版本。下方 Runtime 与 Load Average 继续实时更新，方便辨认“运行时间长”与“当前负载高”这两类不同状态。
 
-### 12. Startup Apps 自启动项
+### 13. Startup Apps 自启动项
 
 <a href="screenshots/startup-apps-latest.png"><img width="100%" src="screenshots/startup-apps-latest.png" alt="Managed XDG startup application list with enable and disable controls"></a>
 
 读取系统与当前用户的 XDG autostart 目录，显示名称、启用状态、来源和命令。选择条目后可以启用、禁用或打开配置位置；系统级条目会通过当前用户目录中的 XDG override 管理，不会直接修改 `/etc/xdg/autostart`。
 
-### 13. Users 用户资源汇总
+### 14. Users 用户资源汇总
 
 <a href="screenshots/users-latest.png"><img width="100%" src="screenshots/users-latest.png" alt="Per-user process count, CPU and memory totals"></a>
 
 按照进程所有者聚合进程数量、CPU 与常驻内存。它包含 `root` 和 systemd 服务账户，因此可以快速看出资源主要属于登录用户还是系统服务。
 
-### 14. Services systemd 服务
+### 15. Services systemd 服务与进程树
 
-<a href="screenshots/services-latest.png"><img width="100%" src="screenshots/services-latest.png" alt="Read-only systemd service state list"></a>
+<a href="screenshots/services-latest.png"><img width="100%" src="screenshots/services-latest.png" alt="System and user systemd services expanded into their member process trees"></a>
 
-列出 systemd unit 的 Active、State 与 Description。服务列表只在页面初始化时读取一次，避免持续调用 `systemctl` 产生额外负担；当前版本保持只读，服务管理继续交给系统工具。
+- 分别读取当前用户的 `systemctl --user` 与系统级 `systemctl`，按照 User services、System services、service unit、成员进程构成三层树。
+- service 行汇总其 cgroup 成员进程的 CPU 和常驻内存；展开 unit 后显示真实 PID、状态和命令，双击进程可以打开完整进程详情。
+- 可以按作用域、Active 或 Failed 筛选，并可搜索 unit、状态、描述和成员进程。服务 unit 通过显式刷新更新，进程资源仍随常规采样更新。
+- 支持 Start、Stop、Restart、Details 和右键菜单。用户服务使用当前用户权限；系统服务通过 systemd/polkit 授权，不调用 `sudo`，拒绝或取消授权会显示原始错误而不会报告成功。
 
-### 15. Settings 与双主题
+### 16. Settings 与双主题
 
 Settings 提供三种外观选项：`Follow system`、`Dark` 和 `Light`。Follow system 会跟随 AnduinOS/Ubuntu 的颜色方案；固定模式不受桌面主题变化影响。主题选择以及 CPU 的 Overall、Logical processors 展开状态都会保存在 `~/.config/tmog-linux/settings.ini`。
 
@@ -279,7 +292,7 @@ tmog-linux
 | NVIDIA GPU | 驱动附带的 `nvidia-smi` |
 | 温度 | `/sys/class/thermal`、`/sys/class/hwmon`、`nvidia-smi` |
 | 功耗 | 电池或系统输入遥测、Intel RAPL、NVIDIA 设备功耗 |
-| 服务与自启动 | systemd、系统和用户 XDG autostart 目录 |
+| 应用、服务与自启动 | `.desktop` 元数据、systemd system/user unit、进程 cgroup、系统和用户 XDG autostart 目录 |
 
 ## 硬件数据说明
 
@@ -292,8 +305,9 @@ tmog-linux
 
 - 普通用户只能控制自己有权限操作的进程。
 - PID 1 与监视器自身受到保护，不能从界面结束。
-- 不建议使用 `sudo ./run.sh` 启动整个界面。管理系统服务时请继续使用 `systemctl` 或系统自带工具。
-- Services 当前保持只读；Startup Apps 仅管理 XDG 桌面自启动条目，不修改 systemd 服务。
+- 不建议使用 `sudo ./run.sh` 启动整个界面。用户服务操作直接使用 `systemctl --user`；系统服务操作交给 systemd/polkit，是否允许由系统策略决定。
+- 服务控制不会自动提权、不会保存管理员密码；权限不足、unit 状态变化或操作超时都会明确报错。
+- Startup Apps 仅管理 XDG 桌面自启动条目，不修改 systemd 服务。
 
 ## 开发与验证
 
