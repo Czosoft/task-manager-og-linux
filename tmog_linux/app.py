@@ -68,6 +68,7 @@ SIDEBAR_COMPACT_WIDTH = 58
 SIDEBAR_FULL_WIDTH = 205
 SIDEBAR_COMPACT_BREAKPOINT = 760
 SIDEBAR_SHORT_BREAKPOINT = 520
+DATA_TOOLBAR_TABLE_GAP = 10
 
 
 @dataclass(slots=True)
@@ -121,8 +122,10 @@ headerbar button.titlebutton.close:hover { background: #c42b1c; color: #ffffff; 
 .purple { color: #c34bff; }
 .red { color: #ff505a; }
 .status-live { color: #57ea69; font-size: 10px; }
-.toolbar { background: #171916; border-bottom: 1px solid #30342e; padding: 8px 12px; }
-.toolbar button, .compact-button { min-height: 28px; border-radius: 4px; background: #272a25; border: 1px solid #3b4038; color: #dce0d8; box-shadow: none; }
+.toolbar { background: #171916; border-bottom: 1px solid #30342e; padding: 3px 8px; }
+.toolbar button, .compact-button { min-height: 24px; padding: 3px 8px; border-radius: 4px; background: #272a25; border: 1px solid #3b4038; color: #dce0d8; box-shadow: none; }
+.toolbar entry, .toolbar searchentry { min-height: 24px; padding: 3px 8px; }
+.toolbar button.compact-button, button.compact-button { min-width: 24px; padding: 3px; }
 .toolbar button:hover, .compact-button:hover { background: #32362f; }
 .toolbar button:disabled, .compact-button:disabled { background: #20221f; border-color: #30342e; color: #696e67; }
 .collapse-button { min-width: 24px; min-height: 24px; padding: 1px; border-radius: 3px; background: transparent; border: 1px solid #343832; color: #aeb5aa; box-shadow: none; }
@@ -223,8 +226,10 @@ headerbar button.titlebutton.close:hover image { color: #ffffff; }
 .purple { color: #8e22b7; }
 .red { color: #c12735; }
 .status-live { color: #087a2c; font-size: 10px; }
-.toolbar { background: #ececf0; border-bottom: 1px solid #c9c9ce; padding: 8px 12px; }
-.toolbar button, .compact-button { min-height: 28px; border-radius: 5px; background: #ffffff; border: 1px solid #b8bcc3; color: #2c2c2e; box-shadow: 0 1px 1px rgba(0, 0, 0, 0.05); }
+.toolbar { background: #ececf0; border-bottom: 1px solid #c9c9ce; padding: 3px 8px; }
+.toolbar button, .compact-button { min-height: 24px; padding: 3px 8px; border-radius: 5px; background: #ffffff; border: 1px solid #b8bcc3; color: #2c2c2e; box-shadow: 0 1px 1px rgba(0, 0, 0, 0.05); }
+.toolbar entry, .toolbar searchentry { min-height: 24px; padding: 3px 8px; }
+.toolbar button.compact-button, button.compact-button { min-width: 24px; padding: 3px; }
 .toolbar button:hover, .compact-button:hover { background: #e6e6eb; }
 .toolbar button:disabled, .compact-button:disabled { background: #ededf0; border-color: #d2d2d7; color: #98989d; box-shadow: none; }
 .collapse-button { min-width: 24px; min-height: 24px; padding: 1px; border-radius: 4px; background: transparent; border: 1px solid #b8bcc3; color: #484b51; box-shadow: none; }
@@ -917,6 +922,7 @@ def icon_button(icon: str, tooltip: str, css_class: str = "compact-button") -> G
     button.set_image(Gtk.Image.new_from_icon_name(icon, Gtk.IconSize.BUTTON))
     button.set_tooltip_text(tooltip)
     button.get_style_context().add_class(css_class)
+    button.set_valign(Gtk.Align.CENTER)
     return button
 
 
@@ -996,10 +1002,15 @@ def scrollable(child: Gtk.Widget) -> Gtk.ScrolledWindow:
 
 
 def horizontally_scrollable(child: Gtk.Widget) -> Gtk.ScrolledWindow:
+    child.set_vexpand(False)
+    child.set_valign(Gtk.Align.START)
     scroller = Gtk.ScrolledWindow()
     scroller.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.NEVER)
-    scroller.set_overlay_scrolling(False)
+    scroller.set_overlay_scrolling(True)
     scroller.set_shadow_type(Gtk.ShadowType.NONE)
+    scroller.set_propagate_natural_height(True)
+    scroller.set_vexpand(False)
+    scroller.set_margin_bottom(DATA_TOOLBAR_TABLE_GAP)
     scroller.add(child)
     return scroller
 
@@ -1664,6 +1675,7 @@ class TmogWindow(Gtk.Window):
 
     def _build_applications_page(self) -> None:
         page, content = self._page_box("Applications", "DESKTOP GROUPS  /  PROCESS TREES")
+        content.set_spacing(0)
         toolbar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         toolbar.get_style_context().add_class("toolbar")
         self.application_search = Gtk.SearchEntry()
@@ -1748,6 +1760,7 @@ class TmogWindow(Gtk.Window):
 
     def _build_processes_page(self) -> None:
         page, content = self._page_box("Processes", "PROCESS TREE  /  NATIVE SIGNALS")
+        content.set_spacing(0)
         toolbar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         toolbar.get_style_context().add_class("toolbar")
         self.process_view_combo = Gtk.ComboBoxText()
@@ -1899,11 +1912,13 @@ class TmogWindow(Gtk.Window):
 
     def _build_startup_page(self) -> None:
         page, content = self._page_box("Startup Apps", "XDG AUTOSTART  /  MANAGED")
+        content.set_spacing(0)
         note = Gtk.Label(
             label="System entries are managed through safe per-user XDG overrides",
             xalign=0,
         )
         note.get_style_context().add_class("muted")
+        note.set_margin_bottom(10)
         content.pack_start(note, False, False, 0)
 
         toolbar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
@@ -1966,6 +1981,7 @@ class TmogWindow(Gtk.Window):
 
     def _build_services_page(self) -> None:
         page, content = self._page_box("Services", "SYSTEMD  /  USER + SYSTEM CONTROL")
+        content.set_spacing(0)
         toolbar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         toolbar.get_style_context().add_class("toolbar")
         self.service_scope_combo = Gtk.ComboBoxText()

@@ -15,7 +15,17 @@ gi.require_version("Gtk", "3.0")
 gi.require_version("Gdk", "3.0")
 from gi.repository import GLib, Gtk
 
-from tmog_linux.app import TmogWindow
+from tmog_linux.app import DATA_TOOLBAR_TABLE_GAP, TmogWindow
+
+
+def widgets_with_style_class(widget: Gtk.Widget, css_class: str) -> list[Gtk.Widget]:
+    matches = []
+    if widget.get_style_context().has_class(css_class):
+        matches.append(widget)
+    if isinstance(widget, Gtk.Container):
+        for child in widget.get_children():
+            matches.extend(widgets_with_style_class(child, css_class))
+    return matches
 
 
 def sanitize_public_capture(window: TmogWindow) -> None:
@@ -78,6 +88,11 @@ def main() -> int:
     if capture_theme:
         if capture_theme not in ("system", "dark", "light"):
             raise SystemExit("TMOG_CAPTURE_THEME must be system, dark, or light")
+        window.theme_combo.handler_block_by_func(window._theme_changed)
+        try:
+            window.theme_combo.set_active_id(capture_theme)
+        finally:
+            window.theme_combo.handler_unblock_by_func(window._theme_changed)
         window._apply_theme(capture_theme)
     capture_size = os.environ.get("TMOG_CAPTURE_SIZE")
     capture_dimensions: tuple[int, int] | None = None
@@ -155,6 +170,43 @@ def main() -> int:
                 f"allocated={allocation.width}x{allocation.height}, "
                 f"preferred-heights={preferred_heights}"
             )
+        for toolbar in widgets_with_style_class(window.stack.get_visible_child(), "toolbar"):
+            _minimum_height, natural_height = toolbar.get_preferred_height()
+            allocated_height = toolbar.get_allocated_height()
+            print(f"toolbar-height: natural={natural_height}px, allocated={allocated_height}px")
+            if allocated_height > natural_height + 2:
+                window.destroy()
+                raise RuntimeError("Toolbar controls expand beyond their natural height")
+            if allocated_height > 42:
+                window.destroy()
+                raise RuntimeError("Toolbar is taller than the compact data-header target")
+            ancestor = toolbar.get_parent()
+            while ancestor is not None and not isinstance(ancestor, Gtk.ScrolledWindow):
+                ancestor = ancestor.get_parent()
+            if ancestor is not None:
+                reserved_height = ancestor.get_allocated_height() - allocated_height
+                visible_gap = reserved_height + ancestor.get_margin_bottom()
+                print(
+                    f"toolbar-to-table-gap: reserved={reserved_height}px, "
+                    f"margin={ancestor.get_margin_bottom()}px, visible={visible_gap}px"
+                )
+                if reserved_height > 1 or ancestor.get_margin_bottom() != DATA_TOOLBAR_TABLE_GAP:
+                    window.destroy()
+                    raise RuntimeError("Toolbar does not match the intended table-header gap")
+            toolbar_parent = ancestor.get_parent() if ancestor is not None else None
+            if isinstance(toolbar_parent, Gtk.Box):
+                spacing = toolbar_parent.get_spacing()
+                print(f"toolbar-to-table-spacing: {spacing}px")
+                if spacing != 0:
+                    window.destroy()
+                    raise RuntimeError("Toolbar still leaves a gap before the data table")
+        for button in widgets_with_style_class(window.stack.get_visible_child(), "compact-button"):
+            width = button.get_allocated_width()
+            height = button.get_allocated_height()
+            print(f"compact-button-size: {width}x{height}px")
+            if abs(width - height) > 1:
+                window.destroy()
+                raise RuntimeError("Icon-only toolbar button is not square")
         if window.stack.get_visible_child_name() == "summary":
             adjustment = window.summary_scroller.get_vadjustment()
             overflow = max(0.0, adjustment.get_upper() - adjustment.get_page_size())

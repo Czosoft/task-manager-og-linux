@@ -4,6 +4,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from tmog_linux.app import (
+    DATA_TOOLBAR_TABLE_GAP,
     RESOURCE_GRAPH_MAXIMA,
     SIDEBAR_COMPACT_BREAKPOINT,
     SIDEBAR_COMPACT_WIDTH,
@@ -15,6 +16,8 @@ from tmog_linux.app import (
     clamped_scroll_value,
     graph_fraction,
     graph_maximum,
+    horizontally_scrollable,
+    icon_button,
     load_cpu_section_preferences,
     load_theme_preference,
     save_cpu_section_preferences,
@@ -22,6 +25,7 @@ from tmog_linux.app import (
     service_status_visual,
     summary_height_adjustment,
 )
+from gi.repository import Gtk
 
 
 class AppearancePreferenceTests(unittest.TestCase):
@@ -54,6 +58,21 @@ class AppearancePreferenceTests(unittest.TestCase):
         self.assertEqual(SIDEBAR_COMPACT_WIDTH, 58)
         self.assertEqual(SIDEBAR_FULL_WIDTH, 205)
         self.assertGreater(SIDEBAR_COMPACT_BREAKPOINT, WINDOW_MIN_WIDTH)
+
+    def test_horizontal_toolbars_keep_their_natural_height(self):
+        toolbar = Gtk.Box()
+        scroller = horizontally_scrollable(toolbar)
+        self.assertTrue(scroller.get_propagate_natural_height())
+        self.assertFalse(scroller.get_vexpand())
+        self.assertTrue(scroller.get_overlay_scrolling())
+        self.assertEqual(DATA_TOOLBAR_TABLE_GAP, 10)
+        self.assertEqual(scroller.get_margin_bottom(), DATA_TOOLBAR_TABLE_GAP)
+        self.assertFalse(toolbar.get_vexpand())
+        self.assertEqual(toolbar.get_valign(), Gtk.Align.START)
+
+        button = icon_button("view-refresh-symbolic", "Refresh")
+        self.assertTrue(button.get_style_context().has_class("compact-button"))
+        self.assertEqual(button.get_valign(), Gtk.Align.CENTER)
 
     def test_process_scroll_restoration_is_clamped_to_visible_range(self):
         self.assertEqual(clamped_scroll_value(420.0, 0.0, 1000.0, 300.0), 420.0)

@@ -29,7 +29,7 @@
   </tr>
 </table>
 
-> 本页 22 张 `*-latest.png` 均由 beta06.4-r17 同批生成，`screenshots` 目录只保留这一批当前版本功能图。截图中的主机名、账户名和网络地址已替换为公开演示值；性能数字只是采集瞬间的状态，不代表基准测试结果。点击任意截图可以查看原尺寸。
+> 本页 22 张 `*-latest.png` 均由 beta06.4-r21 同批生成，`screenshots` 目录只保留这一批当前版本功能图。截图中的主机名、账户名和网络地址已替换为公开演示值；性能数字只是采集瞬间的状态，不代表基准测试结果。点击任意截图可以查看原尺寸。
 
 ## 功能总览
 
@@ -45,6 +45,8 @@
 | **Processes** | 全部、当前用户、活动和进程树；搜索、排序、CPU 压力条、I/O、启动时间和完整信号操作 |
 | **System** | 系统身份、XDG 自启动项、用户资源汇总，以及可展开和控制的 systemd 用户/系统服务 |
 | **Appearance** | 跟随 AnduinOS/Ubuntu，也可以固定使用深色或 macOS 风格的中性浅色界面 |
+
+Applications、Processes、Startup Apps 与 Services 的操作栏在宽度不足时允许横向滚动；搜索框、筛选框和文字操作按钮保持紧凑的自然高度，纯图标按钮固定为等宽等高。操作栏不会再为隐藏的横向滚动条预留空带，并按照参考界面的节奏与表格标题保留 `10px` 间距。
 
 ## 图示导览
 
@@ -204,7 +206,7 @@ Machine identity 汇总发行版、Kernel、主机名、架构、处理器、物
 
 <a href="screenshots/startup-apps-latest.png"><img width="100%" src="screenshots/startup-apps-latest.png" alt="Managed XDG startup application list with enable and disable controls"></a>
 
-读取系统与当前用户的 XDG autostart 目录，显示名称、启用状态、来源和命令。选择条目后可以启用、禁用或打开配置位置；系统级条目会通过当前用户目录中的 XDG override 管理，不会直接修改 `/etc/xdg/autostart`。
+读取系统与当前用户的 XDG autostart 目录，显示名称、启用状态、来源和命令。选择条目后可以启用、禁用或打开配置位置；这些文字操作按钮与其他数据页使用相同的紧凑高度。系统级条目会通过当前用户目录中的 XDG override 管理，不会直接修改 `/etc/xdg/autostart`。
 
 ### 14. Users 用户资源汇总
 
