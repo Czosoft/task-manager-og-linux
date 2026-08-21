@@ -141,15 +141,32 @@ def main() -> int:
 
     def capture() -> bool:
         details_dialog = None
-        if os.environ.get("TMOG_CAPTURE_PROCESS_DETAILS") == "1":
+        if (
+            os.environ.get("TMOG_CAPTURE_PROCESS_DETAILS") == "1"
+            or os.environ.get("TMOG_CAPTURE_SERVICE_DETAILS") == "1"
+        ):
             dialogs = [
                 widget
                 for widget in Gtk.Window.list_toplevels()
                 if isinstance(widget, Gtk.Dialog) and widget.get_visible()
             ]
             if not dialogs:
-                raise RuntimeError("Process Details dialog did not open")
+                raise RuntimeError("Requested Details dialog did not open")
             details_dialog = dialogs[-1]
+            close_button = details_dialog.get_widget_for_response(Gtk.ResponseType.CLOSE)
+            if close_button is None or not close_button.get_style_context().has_class("compact-button"):
+                details_dialog.destroy()
+                window.destroy()
+                raise RuntimeError("Details Close button is not using the adaptive compact style")
+            action_area = details_dialog.get_action_area()
+            if not action_area.get_style_context().has_class("process-details-actions"):
+                details_dialog.destroy()
+                window.destroy()
+                raise RuntimeError("Details action area is not theme adaptive")
+            print(
+                f"details-close-button: {close_button.get_allocated_width()}x"
+                f"{close_button.get_allocated_height()}px, theme={window._effective_theme}"
+            )
             capture_widget = details_dialog
         else:
             root = window.get_child()
@@ -394,6 +411,15 @@ def main() -> int:
         window._open_process_details(process)
         return GLib.SOURCE_REMOVE
 
+    def open_service_details() -> bool:
+        if os.environ.get("TMOG_CAPTURE_SERVICE_DETAILS") != "1":
+            return GLib.SOURCE_REMOVE
+        service, process = window._selected_service_target()
+        if service is None or process is not None:
+            raise RuntimeError("Service Details capture requires a selected service unit")
+        window._open_service_details(service)
+        return GLib.SOURCE_REMOVE
+
     def prepare_startup_capture() -> bool:
         if window.stack.get_visible_child_name() != "startup":
             return GLib.SOURCE_REMOVE
@@ -534,6 +560,7 @@ def main() -> int:
     if os.environ.get("TMOG_CAPTURE_PUBLIC") == "1":
         GLib.timeout_add(3300, sanitize_public_capture, window)
     GLib.timeout_add(3500, open_process_details)
+    GLib.timeout_add(3500, open_service_details)
     GLib.timeout_add_seconds(4, capture)
     Gtk.main()
     return 0
